@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.0.1](https://github.com/buildagenta/adk-code-mode/compare/adk-code-mode-v2.0.0...adk-code-mode-v2.0.1) (2026-11-02)
+
+
+### Miscellaneous Chores
+
+* credit Agenta as the author ([#25](https://github.com/buildagenta/adk-code-mode/issues/25)) ([bfe577e](https://github.com/buildagenta/adk-code-mode/commit/bfe577e9aaba31ed9d8f6423485b061deb77b963))
+
 ## [2.0.0](https://github.com/buildagenta/adk-code-mode/compare/adk-code-mode-v1.6.1...adk-code-mode-v2.0.0) (2026-09-25)
 
 

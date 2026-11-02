@@ -1,6 +1,6 @@
 FROM python:3.13-slim
 
-LABEL org.opencontainers.image.source="https://github.com/a2anet/adk-code-mode"
+LABEL org.opencontainers.image.source="https://github.com/buildagenta/adk-code-mode"
 LABEL org.opencontainers.image.description="Sandbox base image for ADK Code Mode"
 LABEL org.opencontainers.image.licenses="Apache-2.0"
 

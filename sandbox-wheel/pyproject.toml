@@ -11,7 +11,7 @@ requires-python = ">=3.10"
 license = "Apache-2.0"
 keywords = ["adk", "code-mode", "sandbox"]
 authors = [
-  { name = "A2A Net", email = "hello@a2anet.com" },
+  { name = "Agenta", email = "hello@buildagenta.com" },
 ]
 classifiers = [
   "Development Status :: 4 - Beta",
@@ -27,9 +27,9 @@ dependencies = [
 ]
 
 [project.urls]
-Documentation = "https://github.com/A2ANet/adk-code-mode#readme"
-Issues = "https://github.com/A2ANet/adk-code-mode/issues"
-Source = "https://github.com/A2ANet/adk-code-mode"
+Documentation = "https://github.com/buildagenta/adk-code-mode#readme"
+Issues = "https://github.com/buildagenta/adk-code-mode/issues"
+Source = "https://github.com/buildagenta/adk-code-mode"
 
 [tool.hatch.version]
 path = "src/adk_code_mode_sandbox/__about__.py"

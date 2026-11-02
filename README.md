@@ -98,7 +98,7 @@ override_feature_enabled(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, True)
 
 tool = ExecuteCodeTool(
     tools=[my_fn_tool, McpToolset(...), OpenAPIToolset(...)],
-    backend=UnsafeLocalDockerBackend(image="ghcr.io/a2anet/adk-code-mode:latest"),
+    backend=UnsafeLocalDockerBackend(image="ghcr.io/buildagenta/adk-code-mode:latest"),
 )
 ```
 
@@ -118,8 +118,8 @@ print(send_message(channel="C123", text="hi"))
 ```bash
 # Push the sandbox image to Artifact Registry
 gcloud auth configure-docker <region>-docker.pkg.dev
-docker pull --platform linux/amd64 ghcr.io/a2anet/adk-code-mode:latest
-docker tag  ghcr.io/a2anet/adk-code-mode:latest \
+docker pull --platform linux/amd64 ghcr.io/buildagenta/adk-code-mode:latest
+docker tag  ghcr.io/buildagenta/adk-code-mode:latest \
     <region>-docker.pkg.dev/<project>/<repository>/adk-code-mode-sandbox:latest
 docker push <region>-docker.pkg.dev/<project>/<repository>/adk-code-mode-sandbox:latest
 
@@ -253,10 +253,10 @@ ExecuteCodeTool(tools=..., backend=..., save_tool_results_as_artifacts=True)
 
 ## 🐳 Sandbox Image
 
-The published base image (`ghcr.io/a2anet/adk-code-mode`) works as-is for tools whose execution is fully host-side. To bake in extra Python packages:
+The published base image (`ghcr.io/buildagenta/adk-code-mode`) works as-is for tools whose execution is fully host-side. To bake in extra Python packages:
 
 ```dockerfile
-FROM ghcr.io/a2anet/adk-code-mode:latest
+FROM ghcr.io/buildagenta/adk-code-mode:latest
 RUN pip install --no-cache-dir pandas==2.2.*
 ```
 
@@ -443,9 +443,9 @@ uv run pytest -m docker
 
 `adk-code-mode` is distributed under the terms of the [Apache-2.0](https://spdx.org/licenses/Apache-2.0.html) license.
 
-## 🤝 Join the A2A Net Community
+## 🤝 Join the Agenta Community
 
-A2A Net is a site to find and share AI agents and open-source community. Join to share your A2A agents, ask questions, stay up-to-date with the latest A2A news, be the first to hear about open-source releases, tutorials, and more!
+Agenta is a site to find and share AI agents and open-source community. Join to share your A2A agents, ask questions, stay up-to-date with the latest A2A news, be the first to hear about open-source releases, tutorials, and more!
 
-- 🌍 Site: [A2A Net](https://a2anet.com)
+- 🌍 Site: [Agenta](https://buildagenta.com)
 - 🤖 Discord: [Join the Discord](https://discord.gg/674NGXpAjU)

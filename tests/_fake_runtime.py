@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2025-present A2A Net <hello@a2anet.com>
+# SPDX-FileCopyrightText: 2025-present Agenta <hello@buildagenta.com>
 #
 # SPDX-License-Identifier: Apache-2.0
 """Test-only in-process runtime that runs the sandbox entry in a subprocess.

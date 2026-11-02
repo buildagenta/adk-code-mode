@@ -112,5 +112,5 @@ jobs:
           file: docker/Dockerfile
           push: true
           tags: |
-            ghcr.io/a2anet/adk-code-mode:${{ needs.release-please.outputs.version }}
-            ghcr.io/a2anet/adk-code-mode:latest
+            ghcr.io/buildagenta/adk-code-mode:${{ needs.release-please.outputs.version }}
+            ghcr.io/buildagenta/adk-code-mode:latest

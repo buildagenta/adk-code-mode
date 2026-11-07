@@ -201,7 +201,7 @@ async def test_artifact_helpers_save_list_and_load_json() -> None:
         ")\n"
         "print('items', list_artifacts())\n"
         "loaded = load_artifact(filename='report.json')\n"
-        "print('loaded', json.loads(loaded['data']))\n"
+        "print('loaded', loaded)\n"
     )
 
     result = await _run(tool, ctx, code, call_id="run-ws")
@@ -273,11 +273,11 @@ async def test_artifact_helpers_support_binary_content() -> None:
         "import base64\n"
         "from tools import load_artifact\n"
         "blob = load_artifact(filename='blob.bin')\n"
-        "print(blob['kind'], base64.b64decode(blob['data']), blob['mime_type'])\n"
+        "print(base64.b64decode(blob['bytes']), blob['mime_type'])\n"
     )
     result = await _run(tool, ctx, load, call_id="run-bin-2")
 
-    assert "bytes b'\\x00\\x01\\x02' application/octet-stream" in result["stdout"]
+    assert "b'\\x00\\x01\\x02' application/octet-stream" in result["stdout"]
 
 
 @pytest.mark.asyncio
@@ -314,7 +314,7 @@ async def test_workspace_is_fresh_each_turn_while_artifact_helpers_persist() -> 
         "import os\n"
         "from tools import load_artifact\n"
         "print('workspace_has_temp', os.path.exists('temp.txt'))\n"
-        "print('artifact_value', load_artifact(filename='persist.txt')['data'])\n"
+        "print('artifact_value', load_artifact(filename='persist.txt'))\n"
     )
     ctx.invocation_id = "inv-fresh-2"
     result = await _run(tool, ctx, second, call_id="run-fresh-2")

@@ -18,6 +18,7 @@ from adk_code_mode import (
     TOOL_RESULT_NAME_KEY,
     ToolResultArtifactTool,
 )
+from adk_code_mode._artifact_tools import load_artifact
 from adk_code_mode.tool import ExecuteCodeTool
 from adk_code_mode.tools import normaliser
 from tests._fake_runtime import FakeRuntime
@@ -84,12 +85,12 @@ def test_declaration_does_not_shadow_existing_param() -> None:
 
 
 @pytest.mark.asyncio
-async def test_small_result_saved_and_returned_unchanged() -> None:
+async def test_result_saved_and_returned_unchanged() -> None:
     ctx = cast(Any, _FakeToolContext())
     result = await ToolResultArtifactTool(_ResultTool({"ok": True})).run_async(
         args={"q": "hi"}, tool_context=cast(ToolContext, ctx)
     )
-    assert result == {"ok": True}  # transparent for small results
+    assert result == {"ok": True}
     saved = ctx.saved[0]
     assert saved["custom_metadata"][TOOL_RESULT_METADATA_KEY] == "true"
     assert saved["filename"] == saved["custom_metadata"][TOOL_RESULT_FILENAME_KEY]
@@ -112,20 +113,33 @@ async def test_optional_name_and_description_used() -> None:
 
 
 @pytest.mark.asyncio
-async def test_large_result_elided_with_reload_tip() -> None:
-    big = {"blob": "x" * 100}
+async def test_large_result_returned_in_full_and_saved() -> None:
+    big = {"blob": "x" * 200_000}
     ctx = cast(Any, _FakeToolContext())
-    result = await ToolResultArtifactTool(_ResultTool(big), large_result_threshold=10).run_async(
+    result = await ToolResultArtifactTool(_ResultTool(big)).run_async(
         args={"q": "hi"}, tool_context=cast(ToolContext, ctx)
     )
-    assert set(result) == {"tool_result_artifact", "note"}
-    assert result["tool_result_artifact"] == ctx.saved[0]["filename"]
-    assert result["note"] == (
-        "The tool result (112 bytes) was saved as an artifact "
-        "'search_call-1.json' instead of being returned inline. Reload it with "
-        "load_artifact(filename='search_call-1.json')."
+    assert result == big
+    assert json.loads(ctx.saved[0]["artifact"].inline_data.data) == big
+
+
+@pytest.mark.parametrize(
+    "value",
+    [{"rows": [{"id": 1, "name": "Ada"}], "next": None}, [1, "two", 3.0], "plain text", None],
+)
+@pytest.mark.asyncio
+async def test_saved_result_reloads_as_the_original_value(value: Any) -> None:
+    ctx = cast(Any, _FakeToolContext())
+    await ToolResultArtifactTool(_ResultTool(value)).run_async(
+        args={"q": "hi"}, tool_context=cast(ToolContext, ctx)
     )
-    assert json.loads(ctx.saved[0]["artifact"].inline_data.data) == big  # full payload persisted
+    part: types.Part = ctx.saved[0]["artifact"]
+
+    async def _load(filename: str, *, version: int | None = None) -> types.Part:
+        return part
+
+    ctx.load_artifact = _load
+    assert await load_artifact(filename=ctx.saved[0]["filename"], tool_context=ctx) == value
 
 
 @pytest.mark.asyncio

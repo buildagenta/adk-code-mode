@@ -230,9 +230,9 @@ class ExecuteCodeTool(BaseTool):
             ``load_artifact`` / ``list_artifacts`` are injected as top-level
             tools. Set ``False`` for a strict tool surface.
           save_tool_results_as_artifacts: If true (default), every non-artifact
-            tool is wrapped so its result is also saved as a session artifact;
-            large results are elided from the reply and reloadable via
-            ``load_artifact``. Set ``False`` to return tool results inline.
+            tool is wrapped so its result is also saved as a session artifact,
+            reloadable in later turns via ``load_artifact``. The code always
+            gets the full result. Set ``False`` to skip saving.
           append_code_mode_metadata_to_system_instruction: If true (default),
             every model turn's system instruction gets a ``<code-mode>`` block
             describing the sandbox: its Python version, its preinstalled

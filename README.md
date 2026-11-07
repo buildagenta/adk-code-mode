@@ -225,9 +225,7 @@ save_artifact(
     mime_type="application/json",
 )
 print(list_artifacts())
-report = load_artifact(filename="report.json")
-if report is not None and report["kind"] == "text":
-    payload = json.loads(report["data"])
+report = load_artifact(filename="report.json")  # {"status": "ready"}, already parsed
 ```
 
 Pass `include_artifact_tools=False` to opt out. To react when the model saves an artifact, pass `on_artifacts_saved`:
@@ -243,7 +241,7 @@ ExecuteCodeTool(tools=..., backend=..., on_artifacts_saved=on_saved)
 
 ### Tool results as artifacts
 
-By default (`save_tool_results_as_artifacts=True`) every non-artifact tool is wrapped so its return value is saved as a session artifact tagged `code_mode.tool_result = "true"`. This lets a host forward tool outputs to the user (read the marker in `on_artifacts_saved`) and keeps large results out of the model's context — a result whose serialised form exceeds the threshold is replaced in the reply with a short note pointing at the artifact, which the model reloads with `load_artifact`.
+By default (`save_tool_results_as_artifacts=True`) every non-artifact tool is wrapped so its return value is saved as a session artifact tagged `code_mode.tool_result = "true"`. This lets a host forward tool outputs to the user (read the marker in `on_artifacts_saved`) and lets a later turn reload a result with `load_artifact`. The code always gets the full result.
 
 Naming is transparent: the filename is derived from the tool name and call id. Each wrapped tool also gains two **optional** parameters — `artifact_name` and `artifact_description` — that the model may pass to name/describe the saved artifact; both land in the artifact's `custom_metadata` (`code_mode.artifact_name` / `code_mode.artifact_description`) alongside the marker. Set `save_tool_results_as_artifacts=False` to return tool results inline without persisting them.
 
@@ -283,7 +281,7 @@ The model can read spilled stdout back from the overflow artifact:
 ```python
 from tools import load_artifact
 spilled = load_artifact(filename="code_mode/stdout/<call-id>.txt")
-print(spilled["data"][-2000:])
+print(spilled[-2000:])
 ```
 
 ### Turn-scoped sessions
@@ -390,7 +388,7 @@ print(list(pathlib.Path("/tools").iterdir()))
 print(open("/tools/slack/send_message.py").read())  # signature + docstring
 ```
 
-Text and JSON-like MIME types travel as plain strings in artifact tools; binary content is base64-encoded. `load_artifact` returns `{"kind": "text" | "bytes", "data": str, "mime_type": str | None}`.
+Text and JSON-like MIME types travel as plain strings in artifact tools; binary content is base64-encoded. `load_artifact` returns the content itself: the parsed value for JSON, a `str` for other text, and `{"mime_type": str, "bytes": str}` (base64) for binary.
 
 ## 🛡️ Safety
 

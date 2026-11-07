@@ -236,15 +236,17 @@ class ExecuteCodeTool(BaseTool):
           append_code_mode_metadata_to_system_instruction: If true (default),
             every model turn's system instruction gets a ``<code-mode>`` block
             describing the sandbox: its Python version, its preinstalled
-            packages, and every available function's signature and docstring.
+            packages, and every available function's signature, return type and
+            docstring.
             Set ``False`` for a bare system instruction — the tool description
             then tells the model to discover functions by listing ``/tools/``
             from within the code it runs, and the Python version and package
             list are not surfaced at all.
           max_code_mode_metadata_chars: Budget for the whole rendered
             ``<code-mode>`` block, tags included. An oversized block first
-            drops signatures and docstrings (keeping the import lines), then
-            replaces the catalog with a pointer to ``/tools/``. The Python
+            drops types, signatures and docstrings (keeping the import lines
+            and telling the model to read a function's stub before calling it),
+            then replaces the catalog with a pointer to ``/tools/``. The Python
             version and package list are always kept. Only consulted when
             ``append_code_mode_metadata_to_system_instruction`` is true.
           max_output_chars: Caps stdout/stderr handed back to the model.

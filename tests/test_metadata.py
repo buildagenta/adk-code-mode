@@ -30,6 +30,7 @@ class _SchemaTool(BaseTool):
                 "properties": {"message": {"type": "string", "description": "What to say."}},
                 "required": ["message"],
             },
+            response_json_schema={"type": "object", "properties": {"echo": {"type": "string"}}},
         )
 
 
@@ -144,9 +145,11 @@ def test_empty_package_list_omits_the_tag() -> None:
 def test_full_tier_includes_signatures_and_docstrings() -> None:
     block = metadata.render(identity="img", namespaced=_namespaced(), max_chars=10_000)
 
-    assert "def tool_0" in block
+    assert "class Tool0Response(TypedDict, total=False):\n    echo: str" in block
+    assert "def tool_0(message: str) -> Tool0Response:" in block
     assert "What the model sees" not in block
     assert "message: str" in block
+    assert metadata.READ_BEFORE_CALLING not in block
 
 
 def test_names_tier_keeps_import_lines_only() -> None:
@@ -156,7 +159,9 @@ def test_names_tier_keeps_import_lines_only() -> None:
 
     assert "from tools import tool_0, tool_1, tool_2" in block
     assert "def tool_0" not in block
+    assert "Tool0Response" not in block
     assert "message: str" not in block
+    assert f"{metadata.HOW_TO_USE} {metadata.READ_BEFORE_CALLING}" in block
 
 
 def test_pointer_tier_is_unconditional() -> None:
@@ -165,6 +170,7 @@ def test_pointer_tier_is_unconditional() -> None:
     assert len(block) > 10  # the floor wins over the budget
     assert metadata.DISCOVER_TOOLS in block
     assert metadata.HOW_TO_USE in block
+    assert metadata.READ_BEFORE_CALLING not in block
     assert "from tools import" not in block
 
 

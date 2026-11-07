@@ -18,15 +18,18 @@ class _SchemaTool(BaseTool):
         *,
         description: str,
         schema: dict[str, object] | None = None,
+        response: dict[str, object] | None = None,
     ) -> None:
         super().__init__(name=name, description=description)
         self._schema = schema or {}
+        self._response = response
 
     def _get_declaration(self) -> genai_types.FunctionDeclaration | None:
         return genai_types.FunctionDeclaration(
             name=self.name,
             description=self.description,
             parameters_json_schema=self._schema,
+            response_json_schema=self._response,
         )
 
 
@@ -104,3 +107,35 @@ def test_render_catalog_groups_tools_by_namespace_and_sorts() -> None:
     gmail_idx = catalog.index("# tools.gmail")
     slack_idx = catalog.index("# tools.slack")
     assert gmail_idx < slack_idx, "namespaces sorted alphabetically"
+
+
+def test_render_catalog_defines_module_types_before_signatures() -> None:
+    bookings = _FakeToolset("bookings")
+    item = {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}
+    get = _SchemaTool(
+        "get_booking",
+        description="Get a booking.",
+        response={"type": "object", "properties": {"booking": item}},
+    )
+    search = _SchemaTool("search", description="Search.", response={"type": "array", "items": item})
+    ping = _SchemaTool("ping", description="Ping.")
+    catalog = render_catalog(_build([(get, bookings), (search, bookings), (ping, bookings)]))
+    assert catalog == (
+        "# tools.bookings\n\n"
+        "from tools.bookings import get_booking, ping, search\n\n"
+        "class GetBookingResponse(TypedDict, total=False):\n"
+        "    booking: GetBookingResponseBooking\n\n"
+        "class GetBookingResponseBooking(TypedDict):\n"
+        "    id: str\n\n"
+        "class SearchResponseItem(TypedDict):\n"
+        "    id: str\n\n"
+        "def get_booking() -> GetBookingResponse:\n"
+        '    """Get a booking.\n    """\n'
+        "    ...\n\n"
+        "def ping() -> Any:\n"
+        '    """Ping.\n    """\n'
+        "    ...\n\n"
+        "def search() -> list[SearchResponseItem]:\n"
+        '    """Search.\n    """\n'
+        "    ...\n"
+    )

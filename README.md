@@ -339,7 +339,15 @@ yaml: PyYAML 6.0.2
 
 from tools.slack import list_channels, send_message
 
-def list_channels() -> Any:
+class ListChannelsResponse(TypedDict):
+    channels: list[ListChannelsResponseChannelsItem]
+    next_cursor: NotRequired[str]
+
+class ListChannelsResponseChannelsItem(TypedDict):
+    id: str
+    name: str
+
+def list_channels() -> ListChannelsResponse:
     """List Slack channels."""
     ...
 
@@ -355,6 +363,8 @@ from tools import save_artifact, load_artifact, list_artifacts
 </code-mode>
 ~~~
 
+Return types come from each tool's `response_json_schema`: objects become `TypedDict` classes, defined once at the top of their module's section and in the tool's stub file, and a tool without one returns `Any`. A tool with exactly one required parameter takes it positionally (`load_artifact("report.csv", version=2)`); every other parameter is keyword-only.
+
 Tags are indented; their content is not. The `<tools-package>` body is Python source, where leading whitespace is meaningful. Each installed-package line is `<import name>: <distribution> <version>`; namespace imports supplied by multiple distributions list every provider in deterministic order. Import names and providers are sorted so the block stays byte-stable for prompt caching. `<python-version>` and `<installed-packages>` are omitted entirely — rather than rendered blank — when the sandbox hasn't reported yet or the image has no extra packages, since an empty tag reads as "none exist".
 
 With `save_tool_results_as_artifacts` enabled (the default), each non-artifact tool above — e.g. `list_channels` and `send_message` — also carries two optional `artifact_name: str | None = ...` / `artifact_description: str | None = ...` parameters for naming its saved result.
@@ -364,7 +374,7 @@ With `save_tool_results_as_artifacts` enabled (the default), each non-artifact t
 A block over `max_code_mode_metadata_chars` degrades in tiers instead of vanishing. The Python version and package list survive every tier — they're small, and the model cannot discover them any other way.
 
 1. **Full** — as above.
-2. **Names only** — signatures and docstrings dropped, import lines kept:
+2. **Names only** — types, signatures and docstrings dropped, import lines kept. `<how-to-use>` gains a line telling the model to run `help(fn)` or read `/tools/<module>/<fn>.py` before calling a function it hasn't used:
 
    ~~~
      <tools-package>
@@ -387,7 +397,7 @@ At the last tier the model navigates the sandbox from Python instead:
 ```python
 import pathlib
 print(list(pathlib.Path("/tools").iterdir()))
-print(open("/tools/slack/send_message.py").read())  # signature + docstring
+print(open("/tools/slack/send_message.py").read())  # types, signature + docstring
 ```
 
 Text and JSON-like MIME types travel as plain strings in artifact tools; binary content is base64-encoded. `load_artifact` returns `{"kind": "text" | "bytes", "data": str, "mime_type": str | None}`.

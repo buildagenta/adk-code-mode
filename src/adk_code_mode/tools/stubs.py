@@ -5,8 +5,10 @@
 
 Each stub is a real ``.py`` file the sandbox writes into ``/tools/``. The
 function body is a single delegation into the host via the RPC client, so the
-generated file is small and robust. Type hints come from the tool's JSON
-Schema (``BaseTool._get_declaration().parameters_json_schema``).
+generated file is small and robust. Parameter types come from the tool's
+JSON Schema (``BaseTool._get_declaration().parameters_json_schema``); the return
+type comes from ``response_json_schema``, with nested objects rendered as
+``TypedDict`` classes defined in the same module.
 
 ``render_tool`` returns a structured ``RenderedTool``; ``render_tool_source``
 turns one into the on-disk ``.py`` stub. The catalog renderer (in
@@ -529,8 +531,78 @@ def _format_docstring(
             for extra in rest:
                 lines.append(f"        {extra}")
             lines.extend(_describe_fields(schema, indent="        "))
-    body = "\n    ".join(lines)
+    body = "\n    ".join(lines).replace("\\", "\\\\").replace('"""', '""\\"')
     return f'"""{body}\n    """'
+
+
+def _pascal(raw: str) -> str:
+    """``first_name`` / ``firstName`` / ``first-name`` -> ``FirstName``."""
+    return "".join(part[:1].upper() + part[1:] for part in re.split(r"[^0-9a-zA-Z]+", raw))
+
+
+def _return_type(schema: Any, *, name: str, defs: dict[str, str], depth: int = 0) -> str:
+    """Convert a response schema to a type expression, adding ``TypedDict``s to ``defs``.
+
+    Objects with declared properties become ``TypedDict`` classes named after
+    their path (``name``); everything else defers to ``_schema_to_type``.
+    ``defs`` maps class name to source, in the order the classes are first met.
+    """
+    schema = _effective_schema(schema)
+    if depth >= _MAX_SCHEMA_DEPTH:
+        return "Any"
+    ty = schema.get("type")
+    variants = schema.get("anyOf") or schema.get("oneOf")
+    properties = schema.get("properties")
+    extra = schema.get("additionalProperties")
+    if "enum" in schema:
+        return _schema_to_type(schema)
+    if isinstance(variants, list) and variants:
+        parts = [_return_type(v, name=name, defs=defs, depth=depth + 1) for v in variants]
+    elif isinstance(ty, list):
+        rest = {k: v for k, v in schema.items() if k not in ("type", "nullable")}
+        parts = [_return_type({**rest, "type": t}, name=name, defs=defs, depth=depth) for t in ty]
+    elif ty in ("object", None) and isinstance(properties, dict) and properties:
+        parts = [_typed_dict(schema, name=name, defs=defs, depth=depth)]
+    elif ty == "object" and isinstance(extra, dict) and extra:
+        value = _return_type(extra, name=f"{name}Value", defs=defs, depth=depth + 1)
+        parts = [f"dict[str, {value}]"]
+    elif ty == "array" and isinstance(schema.get("items"), dict) and not schema.get("prefixItems"):
+        item = _return_type(schema["items"], name=f"{name}Item", defs=defs, depth=depth + 1)
+        parts = [f"list[{item}]"]
+    else:
+        return _schema_to_type(schema)
+    unique = list(dict.fromkeys(parts))
+    if "Any" in unique:
+        return "Any"
+    if schema.get("nullable") and "None" not in unique:
+        unique.append("None")
+    return " | ".join(unique)
+
+
+def _typed_dict(schema: dict[str, Any], *, name: str, defs: dict[str, str], depth: int) -> str:
+    """Add a ``TypedDict`` for an object schema to ``defs`` and return its name.
+
+    Keys that aren't identifiers force the functional syntax. When the schema
+    lists no ``required`` keys every key is optional (``total=False``);
+    otherwise only the unlisted ones are wrapped in ``NotRequired``.
+    """
+    unique, n = name, 2
+    while unique in defs:
+        unique, n = f"{name}{n}", n + 1
+    defs[unique] = ""  # Reserve the name; parents precede their children.
+    required = {key for key in schema.get("required") or [] if isinstance(key, str)}
+    fields: list[tuple[str, str]] = []
+    for key, raw in schema["properties"].items():
+        ty = _return_type(raw, name=unique + _pascal(key), defs=defs, depth=depth + 1)
+        fields.append((key, f"NotRequired[{ty}]" if required and key not in required else ty))
+    total = "" if required else ", total=False"
+    if all(key.isidentifier() and not keyword.iskeyword(key) for key, _ in fields):
+        body = "".join(f"\n    {key}: {ty}" for key, ty in fields)
+        defs[unique] = f"class {unique}(TypedDict{total}):{body}"
+    else:
+        items = ", ".join(f"{key!r}: {ty!r}" for key, ty in fields)
+        defs[unique] = f"{unique} = TypedDict({unique!r}, {{{items}}}{total})"
+    return unique
 
 
 def _sanitise_param(raw: str) -> str:
@@ -560,6 +632,9 @@ class RenderedParam:
 class RenderedTool:
     """Structured tool ready for stub or catalog rendering.
 
+    A tool with exactly one required parameter takes it positionally or by
+    keyword; every other parameter is keyword-only.
+
     Argument forwarding rules (Option A):
 
     - Required, no schema default: ``name: T``; always forwarded.
@@ -579,10 +654,14 @@ class RenderedTool:
     namespace: str | None
     docstring: str
     params: tuple[RenderedParam, ...]
+    return_type: str
+    types: tuple[str, ...]
+    """Source of each ``TypedDict`` the return type refers to, parents first."""
 
     def signature_for(self, target: Target) -> str:
-        """Return the ``def name(...) -> Any:`` line for the requested target."""
-        return f"def {self.attribute}({_render_params(self.params, target=target)}) -> Any:"
+        """Return the ``def name(...) -> T:`` line for the requested target."""
+        params = _render_params(self.params, target=target)
+        return f"def {self.attribute}({params}) -> {self.return_type}:"
 
     @property
     def needs_missing_sentinel(self) -> bool:
@@ -590,12 +669,13 @@ class RenderedTool:
 
 
 def _render_params(params: tuple[RenderedParam, ...], *, target: Target) -> str:
-    """Render the keyword-only parameter list."""
-    if not params:
-        return ""
-    pieces: list[str] = ["*"]
+    """Render the parameter list; a sole required parameter may be positional."""
+    pieces: list[str] = []
     optional_default = "_MISSING" if target == "stub" else "..."
-    for p in params:
+    positional = sum(p.is_required for p in params) == 1
+    for i, p in enumerate(params):
+        if i == int(positional):
+            pieces.append("*")
         if p.is_required:
             if p.schema_default is None:
                 pieces.append(f"{p.py_name}: {p.type_expr}")
@@ -681,30 +761,44 @@ def render_tool(nt: NamespacedTool) -> RenderedTool:
         description = nt.resolved.tool.description
     docstring = _format_docstring(description=description, param_docs=param_docs)
 
+    defs: dict[str, str] = {}
+    response = getattr(declaration, "response_json_schema", None)
+    root = _pascal(nt.attribute) + "Response"
+    return_type = _return_type(response, name=root, defs=defs) if response else "Any"
+
     return RenderedTool(
         attribute=nt.attribute,
         dotted_path=nt.dotted_path,
         namespace=nt.namespace,
         docstring=docstring,
         params=tuple(params),
+        return_type=return_type,
+        types=tuple(defs.values()),
     )
 
 
 def render_tool_source(rt: RenderedTool) -> str:
     """Render the on-disk Python stub source for a tool."""
     sig = rt.signature_for("stub")
+    # `NotRequired` is 3.11+; annotations are never evaluated, so a sandbox on
+    # 3.10 only needs the import kept out of runtime.
+    not_required = any("NotRequired[" in t for t in rt.types)
     lines: list[str] = [
         "# Generated by adk-code-mode. Do not edit.",
         "from __future__ import annotations",
         "",
-        "from typing import Any, Literal",
+        f"from typing import {'TYPE_CHECKING, ' if not_required else ''}Any, Literal, TypedDict",
         "",
         "from adk_code_mode_sandbox._rpc_client import call as _call",
         "",
-        "",
     ]
+    if not_required:
+        lines.extend(["if TYPE_CHECKING:", "    from typing import NotRequired", ""])
+    lines.append("")
     if rt.needs_missing_sentinel:
         lines.extend(["_MISSING = object()", "", ""])
+    for source in rt.types:
+        lines.extend([source, "", ""])
     lines.append(sig)
     lines.append(f"    {rt.docstring}")
 

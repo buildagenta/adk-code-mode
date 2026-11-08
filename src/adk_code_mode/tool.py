@@ -21,7 +21,6 @@ import asyncio
 import base64
 import contextlib
 import dataclasses
-import datetime as dt
 import enum
 import logging
 import mimetypes
@@ -32,8 +31,6 @@ import threading
 import time
 import weakref
 from collections.abc import Awaitable, Sequence
-from decimal import Decimal
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable, Generic, TypeVar
 
 from google.adk.agents.invocation_context import InvocationContext
@@ -45,6 +42,7 @@ from google.genai import types as genai_types
 
 from adk_code_mode import metadata
 from adk_code_mode._artifact_tools import ARTIFACT_TOOLS
+from adk_code_mode._json import json_safe
 from adk_code_mode.output import truncate
 from adk_code_mode.runtime.base import (
     SandboxBackend,
@@ -995,7 +993,7 @@ async def _handle_tool_call(
         result = dispatch.result()
     try:
         if result.ok:
-            reply: Frame = ToolResultFrame(id=frame.id, ok=True, value=_json_safe(result.value))
+            reply: Frame = ToolResultFrame(id=frame.id, ok=True, value=json_safe(result.value))
         else:
             reply = ToolResultFrame(
                 id=frame.id,
@@ -1004,7 +1002,7 @@ async def _handle_tool_call(
                     type=result.error_type or "Error",
                     message=result.error_message or "",
                     status_code=result.status_code,
-                    body=_json_safe(result.body),
+                    body=json_safe(result.body),
                 ),
             )
         await session.send(reply)
@@ -1024,36 +1022,6 @@ async def _handle_tool_call(
             await session.send(fallback)
         except Exception:
             logger.exception("failed to send fallback tool_result frame for id=%s", frame.id)
-
-
-def _json_safe(value: Any) -> Any:
-    """Best-effort conversion of a tool result to a JSON-safe value."""
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    if isinstance(value, (bytes, bytearray)):
-        return {
-            "kind": "bytes",
-            "data": base64.b64encode(bytes(value)).decode("ascii"),
-            "encoding": "base64",
-        }
-    if isinstance(value, (dt.datetime, dt.date)):
-        return value.isoformat()
-    if isinstance(value, Decimal):
-        return str(value)
-    if isinstance(value, Path):
-        return str(value)
-    if isinstance(value, (list, tuple, set, frozenset)):
-        return [_json_safe(v) for v in value]
-    if isinstance(value, dict):
-        return {str(k): _json_safe(v) for k, v in value.items()}
-    if hasattr(value, "model_dump"):
-        try:
-            return _json_safe(value.model_dump(mode="json"))
-        except Exception:
-            pass
-    if dataclasses.is_dataclass(value) and not isinstance(value, type):
-        return _json_safe(dataclasses.asdict(value))
-    return repr(value)
 
 
 def _level_name_to_int(name: str) -> int:

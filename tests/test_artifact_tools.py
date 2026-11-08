@@ -163,6 +163,7 @@ async def test_save_artifact_defaults_custom_metadata_to_none() -> None:
         (b"not json", "application/json", "not json"),
         (b"# Report", "text/markdown", "# Report"),
         (b"plain", "text/plain; charset=utf-8", "plain"),
+        ("<a>é</a>".encode("iso-8859-1"), "application/xml; charset=iso-8859-1", "<a>é</a>"),
         (b"\x00\x01\x02", "image/png", {"mime_type": "image/png", "bytes": "AAEC"}),
     ],
 )
@@ -187,6 +188,7 @@ async def test_load_artifact_returns_text_part_as_str() -> None:
     [
         ('{"status": "ok", "n": [1, 2]}', "application/json", {"status": "ok", "n": [1, 2]}),
         ("# Notes", "text/markdown", "# Notes"),
+        ("café", "text/plain; charset=iso-8859-1", "café"),
         ("AAEC", "image/png", {"mime_type": "image/png", "bytes": "AAEC"}),
         ("AAEC", None, {"mime_type": "application/octet-stream", "bytes": "AAEC"}),
     ],

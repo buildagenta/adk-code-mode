@@ -31,6 +31,7 @@ from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 
 from adk_code_mode.mcp_results import structured_result
+from adk_code_mode._json import json_safe
 from adk_code_mode.tool_failures import raise_for_failed_result
 
 # Transport-neutral metadata stamped on saved tool-result artifacts. Downstream
@@ -157,7 +158,7 @@ def _serialise_result(result: Any) -> tuple[bytes, str]:
         return bytes(result), "application/octet-stream"
     if isinstance(result, str):
         return result.encode("utf-8"), "text/plain; charset=utf-8"
-    return json.dumps(result, default=str, ensure_ascii=False).encode("utf-8"), "application/json"
+    return json.dumps(json_safe(result), ensure_ascii=False).encode("utf-8"), "application/json"
 
 
 __all__ = [

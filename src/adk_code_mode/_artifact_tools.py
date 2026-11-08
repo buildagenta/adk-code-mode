@@ -48,6 +48,14 @@ def _base_mime(mime_type: str) -> str:
     return mime_type.split(";", 1)[0].strip().lower()
 
 
+def _charset(mime_type: str | None) -> str:
+    for param in (mime_type or "").split(";")[1:]:
+        key, _, value = param.partition("=")
+        if key.strip().lower() == "charset":
+            return value.strip().strip('"')
+    return "utf-8"
+
+
 async def save_artifact(
     *,
     filename: str,
@@ -81,7 +89,7 @@ async def save_artifact(
     if _is_text_mime(mime_type):
         part = genai_types.Part(
             inline_data=genai_types.Blob(
-                data=content.encode("utf-8"),
+                data=content.encode(_charset(mime_type)),
                 mime_type=mime_type or "text/plain",
             )
         )
@@ -129,7 +137,7 @@ async def load_artifact(
         data = data.encode("utf-8")
     if not _is_text_mime(mime_type):
         return {"mime_type": mime_type, "bytes": base64.b64encode(data).decode("ascii")}
-    text = data.decode("utf-8")
+    text = data.decode(_charset(mime_type))
     if _is_json_mime(mime_type):
         try:
             return json.loads(text)

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from typing import Any, cast
 
 import pytest
@@ -19,6 +20,7 @@ from adk_code_mode import (
     ToolResultArtifactTool,
 )
 from adk_code_mode._artifact_tools import load_artifact
+from adk_code_mode._json import json_safe
 from adk_code_mode.tool import ExecuteCodeTool
 from adk_code_mode.tools import normaliser
 from tests._fake_runtime import FakeRuntime
@@ -140,6 +142,28 @@ async def test_saved_result_reloads_as_the_original_value(value: Any) -> None:
 
     ctx.load_artifact = _load
     assert await load_artifact(filename=ctx.saved[0]["filename"], tool_context=ctx) == value
+
+
+@dataclass
+class _Record:
+    label: str
+
+
+@pytest.mark.asyncio
+async def test_saved_result_reloads_as_the_value_sent_to_the_code() -> None:
+    record = _Record(label="ready")
+    ctx = cast(Any, _FakeToolContext())
+    await ToolResultArtifactTool(_ResultTool(record)).run_async(
+        args={"q": "hi"}, tool_context=cast(ToolContext, ctx)
+    )
+    part: types.Part = ctx.saved[0]["artifact"]
+
+    async def _load(filename: str, *, version: int | None = None) -> types.Part:
+        return part
+
+    ctx.load_artifact = _load
+    loaded = await load_artifact(filename=ctx.saved[0]["filename"], tool_context=ctx)
+    assert loaded == json_safe(record) == {"label": "ready"}
 
 
 @pytest.mark.asyncio

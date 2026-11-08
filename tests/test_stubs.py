@@ -3,8 +3,14 @@
 # SPDX-License-Identifier: Apache-2.0
 from __future__ import annotations
 
+import warnings
+from typing import Any
+from unittest.mock import MagicMock
+
 from google.adk.tools.base_tool import BaseTool
+from google.adk.tools.mcp_tool.mcp_tool import McpTool
 from google.genai import types as genai_types
+from mcp.types import Tool as McpToolSpec
 
 from adk_code_mode.tools import namespacing, stubs
 from adk_code_mode.tools.normaliser import ResolvedTool
@@ -17,15 +23,18 @@ class _SchemaTool(BaseTool):
         *,
         description: str,
         schema: dict[str, object] | None = None,
+        response: dict[str, object] | None = None,
     ) -> None:
         super().__init__(name=name, description=description)
         self._schema = schema or {}
+        self._response = response
 
     def _get_declaration(self) -> genai_types.FunctionDeclaration | None:
         return genai_types.FunctionDeclaration(
             name=self.name,
             description=self.description,
             parameters_json_schema=self._schema,
+            response_json_schema=self._response,
         )
 
 
@@ -36,6 +45,18 @@ def _build(nts: list[tuple[BaseTool, object | None]]) -> list[namespacing.Namesp
 
 def _stub_source(nt: namespacing.NamespacedTool) -> str:
     return stubs.render_tool_source(stubs.render_tool(nt))
+
+
+def _load_stub(source: str) -> dict[str, Any]:
+    """Execute a stub with warnings as errors; its namespace records calls in ``calls``."""
+    namespace: dict[str, Any] = {}
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        exec(compile(source, "<stub>", "exec"), namespace)
+    calls: list[tuple[str, dict[str, Any]]] = []
+    namespace["_call"] = lambda path, args: calls.append((path, args))
+    namespace["calls"] = calls
+    return namespace
 
 
 def test_render_tool_emits_typed_signature_and_call() -> None:
@@ -190,7 +211,7 @@ def test_render_tool_sanitises_keyword_parameter_names() -> None:
     )
     ns = _build([(tool, None)])
     source = _stub_source(ns[0])
-    assert "def search(*, from_: str) -> Any:" in source
+    assert "def search(from_: str) -> Any:" in source
     assert "'from': from_," in source
 
 
@@ -387,3 +408,301 @@ def test_render_tool_stops_recursing_on_self_referential_schema() -> None:
     source = _stub_source(ns[0])
     assert "root: A tree node." in source
     assert source.count("child: dict[str, Any]") == stubs._MAX_SCHEMA_DEPTH
+
+
+_NASTY = (
+    r"Match ^\S+@\S+\.\S+$ or C:\new\table. "
+    + 'Quotes: " "" """ """" """"" and \'\'\'.\n'
+    + "Ends in a backslash \\"
+)
+
+
+def test_stubs_compile_without_warnings() -> None:
+    """Backslashes, quotes and regexes in any description must not warn or break the stub."""
+    nasty: dict[str, object] = {"type": "string", "description": _NASTY, "pattern": _NASTY}
+    tools: list[tuple[BaseTool, object | None]] = [
+        (
+            _SchemaTool(
+                f"tool_{i}",
+                description=_NASTY,
+                schema={
+                    "type": "object",
+                    "properties": {
+                        "email": nasty,
+                        "items": {"type": "array", "items": nasty, "description": _NASTY},
+                        "nested": {
+                            "type": "object",
+                            "properties": {"inner": nasty},
+                            "patternProperties": {_NASTY: nasty},
+                            "examples": [_NASTY],
+                        },
+                        "choice": {"enum": [_NASTY, '"""']},
+                    },
+                    "required": ["email"][:i],
+                },
+                response={"type": "object", "properties": {_NASTY: nasty, "class": nasty}},
+            ),
+            None,
+        )
+        for i in range(2)
+    ]
+    for file in stubs.render_tree(_build(tools)):
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            compile(file.source, file.path, "exec")
+    namespace = _load_stub(_stub_source(_build(tools)[0]))
+    assert namespace["tool_0"].__doc__.startswith(_NASTY.splitlines()[0])
+
+
+def test_sole_required_parameter_is_positional() -> None:
+    tool = _SchemaTool(
+        "load_artifact",
+        description="Load.",
+        schema={
+            "type": "object",
+            "properties": {"filename": {"type": "string"}, "version": {"type": "integer"}},
+            "required": ["filename"],
+        },
+    )
+    source = _stub_source(_build([(tool, None)])[0])
+    assert "def load_artifact(filename: str, *, version: int | None = _MISSING)" in source
+    namespace = _load_stub(source)
+    namespace["load_artifact"]("x", version=2)
+    namespace["load_artifact"](filename="y")
+    assert namespace["calls"] == [
+        ("load_artifact", {"filename": "x", "version": 2}),
+        ("load_artifact", {"filename": "y"}),
+    ]
+
+
+def test_several_required_parameters_stay_keyword_only() -> None:
+    tool = _SchemaTool(
+        "move",
+        description="Move.",
+        schema={
+            "type": "object",
+            "properties": {"src": {"type": "string"}, "dst": {"type": "string"}},
+            "required": ["src", "dst"],
+        },
+    )
+    assert "def move(*, dst: str, src: str) -> Any:" in _stub_source(_build([(tool, None)])[0])
+
+
+_OUTPUT_SCHEMA: dict[str, object] = {
+    "type": "object",
+    "properties": {
+        "bookings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "status": {"type": "string", "enum": ["open", "closed"]},
+                    "guest": {
+                        "anyOf": [
+                            {"type": "object", "properties": {"name": {"type": "string"}}},
+                            {"type": "null"},
+                        ]
+                    },
+                    "first-name": {"type": ["string", "null"]},
+                },
+                "required": ["id", "status"],
+            },
+        },
+        "totals": {"type": "object", "additionalProperties": {"type": "integer"}},
+        "cursor": {"type": "string", "nullable": True},
+        "raw": {},
+        "pair": {"type": "array", "prefixItems": [{"type": "string"}, {"type": "integer"}]},
+    },
+}
+
+
+def test_mcp_output_schema_becomes_typed_dict_return_type() -> None:
+    """Read from the MCP tool itself, so ADK's JSON-schema feature flag isn't needed."""
+    tool = McpTool(
+        mcp_tool=McpToolSpec(
+            name="get_bookings",
+            description="List bookings.",
+            inputSchema={"type": "object", "properties": {}},
+            outputSchema=_OUTPUT_SCHEMA,
+        ),
+        mcp_session_manager=MagicMock(),
+    )
+    rt = stubs.render_tool(_build([(tool, None)])[0])
+    assert rt.signature_for("catalog") == "def get_bookings() -> GetBookingsResponse:"
+    assert rt.types == (
+        "class GetBookingsResponse(TypedDict, total=False):\n"
+        "    bookings: list[BookingsItem]\n"
+        "    totals: dict[str, int]\n"
+        "    cursor: str | None\n"
+        "    raw: Any\n"
+        "    pair: list[str | int]",
+        "BookingsItem = TypedDict('BookingsItem', "
+        "{'id': 'str', 'status': \"Literal['open', 'closed']\", "
+        "'guest': 'NotRequired[Guest | None]', "
+        "'first-name': 'NotRequired[str | None]'})",
+        "class Guest(TypedDict, total=False):\n    name: str",
+    )
+    source = stubs.render_tool_source(rt)
+    assert "    from typing import NotRequired\n" in source
+    assert _load_stub(source)["BookingsItem"].__name__ == "BookingsItem"
+
+
+def test_identical_shapes_share_one_class_across_a_module() -> None:
+    user = {"type": "object", "properties": {"gid": {"type": "string"}}}
+    other = {"type": "object", "properties": {"email": {"type": "string"}}}
+    task = _SchemaTool(
+        "get_task",
+        description="Task.",
+        response={"type": "object", "properties": {"assignee": user, "owner": other}},
+    )
+    project = _SchemaTool(
+        "get_project",
+        description="Project.",
+        response={"type": "object", "properties": {"owner": user, "assignee": other}},
+    )
+    project_rt, task_rt = stubs.render_tools(_build([(project, None), (task, None)]))
+    assert project_rt.types == (
+        "class GetProjectResponse(TypedDict, total=False):\n"
+        "    owner: Owner\n"
+        "    assignee: Assignee",
+        "class Owner(TypedDict, total=False):\n    gid: str",
+        "class Assignee(TypedDict, total=False):\n    email: str",
+    )
+    # Same shapes, so the same classes, though the properties holding them swapped.
+    assert task_rt.types == (
+        "class GetTaskResponse(TypedDict, total=False):\n    assignee: Owner\n    owner: Assignee",
+        "class Owner(TypedDict, total=False):\n    gid: str",
+        "class Assignee(TypedDict, total=False):\n    email: str",
+    )
+
+
+def test_a_name_taken_by_another_shape_is_qualified_by_its_parent() -> None:
+    a = _SchemaTool(
+        "a",
+        description="A.",
+        response={"type": "object", "properties": {"data": {"properties": {"x": {}}}}},
+    )
+    b = _SchemaTool(
+        "b",
+        description="B.",
+        response={"type": "object", "properties": {"data": {"properties": {"y": {}}}}},
+    )
+    a_rt, b_rt = stubs.render_tools(_build([(a, None), (b, None)]))
+    assert a_rt.types[1] == "class Data(TypedDict, total=False):\n    x: Any"
+    assert b_rt.types[1] == "class BResponseData(TypedDict, total=False):\n    y: Any"
+
+
+def test_an_untitled_top_level_type_belongs_to_its_tool() -> None:
+    shape: dict[str, object] = {"type": "object", "properties": {"id": {"type": "string"}}}
+    first, second = (_SchemaTool(n, description=".", response=shape) for n in ("first", "second"))
+    first_rt, second_rt = stubs.render_tools(_build([(first, None), (second, None)]))
+    assert first_rt.return_type == "FirstResponse"
+    assert second_rt.return_type == "SecondResponse"
+    # Items of a top-level array are shared like any nested object.
+    rows = [
+        _SchemaTool(n, description=".", response={"type": "array", "items": shape})
+        for n in ("rows_a", "rows_b")
+    ]
+    a_rt, b_rt = stubs.render_tools(_build([(rows[0], None), (rows[1], None)]))
+    assert a_rt.return_type == b_rt.return_type == "list[RowsAResponseItem]"
+
+
+def test_defs_and_titles_name_classes_and_refs_may_recurse() -> None:
+    tool = _SchemaTool(
+        "get_team",
+        description="Team.",
+        response={
+            "title": "Team",
+            "type": "object",
+            "properties": {
+                "lead": {"$ref": "#/$defs/User"},
+                "members": {"type": "array", "items": {"$ref": "#/$defs/User"}},
+            },
+            "required": ["lead", "members"],
+            "$defs": {
+                "User": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "manager": {"anyOf": [{"$ref": "#/$defs/User"}, {"type": "null"}]},
+                    },
+                    "required": ["name"],
+                }
+            },
+        },
+    )
+    rt = stubs.render_tool(_build([(tool, None)])[0])
+    assert rt.return_type == "Team"
+    assert rt.types == (
+        "class Team(TypedDict):\n    lead: User\n    members: list[User]",
+        "class User(TypedDict):\n    name: str\n    manager: NotRequired[User | None]",
+    )
+    _load_stub(stubs.render_tool_source(rt))
+
+
+def test_shared_refs_follow_each_schemas_own_defs() -> None:
+    def envelope(id_type: str) -> dict[str, object]:
+        return {
+            "type": "object",
+            "properties": {"envelope": {"$ref": "#/$defs/Envelope"}},
+            "$defs": {
+                "Envelope": {"type": "object", "properties": {"item": {"$ref": "#/$defs/Item"}}},
+                "Item": {"type": "object", "properties": {"id": {"type": id_type}}},
+            },
+        }
+
+    a = _SchemaTool("a", description="A.", response=envelope("string"))
+    b = _SchemaTool("b", description="B.", response=envelope("integer"))
+    a_rt, b_rt = stubs.render_tools(_build([(a, None), (b, None)]))
+    assert a_rt.types[1:] == (
+        "class Envelope(TypedDict, total=False):\n    item: Item",
+        "class Item(TypedDict, total=False):\n    id: str",
+    )
+    assert b_rt.types[1:] == (
+        "class BResponseEnvelope(TypedDict, total=False):\n    item: BResponseEnvelopeItem",
+        "class BResponseEnvelopeItem(TypedDict, total=False):\n    id: int",
+    )
+    # The same `$defs` in another tool still share one class.
+    c = _SchemaTool("c", description="C.", response=envelope("string"))
+    a_rt, c_rt = stubs.render_tools(_build([(a, None), (c, None)]))
+    assert a_rt.types[1:] == c_rt.types[1:]
+
+
+def test_class_names_avoid_stub_imports_and_tool_names() -> None:
+    tool = _SchemaTool(
+        "Any",
+        description="Clash.",
+        response={"title": "Literal", "type": "object", "properties": {"x": {}}},
+    )
+    rt = stubs.render_tool(_build([(tool, None)])[0])
+    assert rt.return_type == "AnyResponse"
+    _load_stub(stubs.render_tool_source(rt))
+
+
+def test_return_type_without_objects_or_schema() -> None:
+    plain = _SchemaTool("count", description="Count.", response={"type": "integer"})
+    rows = _SchemaTool(
+        "rows",
+        description="Rows.",
+        response={
+            "type": "array",
+            "items": {"type": "object", "properties": {"id": {"type": "integer"}}},
+        },
+    )
+    untyped = _SchemaTool("ping", description="Ping.")
+    pair = _SchemaTool(
+        "pair",
+        description="Pair.",
+        response={"type": "array", "prefixItems": [{"type": "integer"}] * 2, "items": False},
+    )
+    count_rt, pair_rt, ping_rt, rows_rt = (
+        stubs.render_tool(nt)
+        for nt in _build([(plain, None), (pair, None), (untyped, None), (rows, None)])
+    )
+    assert count_rt.signature_for("stub") == "def count() -> int:"
+    assert pair_rt.signature_for("stub") == "def pair() -> list[int]:"  # JSON gives a list.
+    assert ping_rt.signature_for("stub") == "def ping() -> Any:"
+    assert ping_rt.types == ()
+    assert rows_rt.signature_for("stub") == "def rows() -> list[RowsResponseItem]:"
+    assert "TYPE_CHECKING" not in _stub_source(_build([(rows, None)])[0])

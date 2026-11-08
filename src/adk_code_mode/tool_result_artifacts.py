@@ -30,6 +30,7 @@ from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 
+from adk_code_mode.mcp_results import structured_result
 from adk_code_mode.tool_failures import raise_for_failed_result
 
 # Transport-neutral metadata stamped on saved tool-result artifacts. Downstream
@@ -105,7 +106,8 @@ class ToolResultArtifactTool(BaseTool):
         stem = artifact_name or _default_stem(self.name, tool_context)
         filename = f"{stem}.json"
 
-        data, mime_type = _serialise_result(result)
+        # Save what code receives, so reloading the artifact gives the same value.
+        data, mime_type = _serialise_result(structured_result(self._wrapped, result))
         metadata: dict[str, Any] = {
             TOOL_RESULT_METADATA_KEY: "true",
             TOOL_RESULT_FILENAME_KEY: filename,

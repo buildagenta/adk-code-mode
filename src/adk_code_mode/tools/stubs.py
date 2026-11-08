@@ -5,8 +5,10 @@
 
 Each stub is a real ``.py`` file the sandbox writes into ``/tools/``. The
 function body is a single delegation into the host via the RPC client, so the
-generated file is small and robust. Type hints come from the tool's JSON
-Schema (``BaseTool._get_declaration().parameters_json_schema``).
+generated file is small and robust. Parameter types come from the tool's
+JSON Schema (``BaseTool._get_declaration().parameters_json_schema``); the return
+type comes from ``response_json_schema`` (an MCP tool's ``outputSchema``), with
+objects rendered as ``TypedDict`` classes shared by the tools of one module.
 
 ``render_tool`` returns a structured ``RenderedTool``; ``render_tool_source``
 turns one into the on-disk ``.py`` stub. The catalog renderer (in
@@ -16,12 +18,16 @@ the ``.pyi``-style block injected into the model's system prompt.
 
 from __future__ import annotations
 
+import itertools
+import json
 import keyword
 import re
 import textwrap
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from adk_code_mode.mcp_results import output_schema
+from adk_code_mode.tool_result_artifacts import ToolResultArtifactTool
 from adk_code_mode.tools.namespacing import NamespacedTool, PythonNameCollisionError
 
 _PRIMITIVES = {
@@ -529,8 +535,211 @@ def _format_docstring(
             for extra in rest:
                 lines.append(f"        {extra}")
             lines.extend(_describe_fields(schema, indent="        "))
-    body = "\n    ".join(lines)
+    body = "\n    ".join(lines).replace("\\", "\\\\").replace('"""', '""\\"')
     return f'"""{body}\n    """'
+
+
+# Names a generated class must not take: the stub's own imports.
+_TYPING_NAMES = frozenset({"Any", "Literal", "NotRequired", "TYPE_CHECKING", "TypedDict"})
+
+_REF_PREFIXES = ("#/$defs/", "#/definitions/")
+
+_Fields = tuple[tuple[str, str], ...]
+
+
+def _pascal(raw: str) -> str:
+    """``first_name`` / ``firstName`` / ``first-name`` -> ``FirstName``."""
+    return "".join(part[:1].upper() + part[1:] for part in re.split(r"[^0-9a-zA-Z]+", raw))
+
+
+def _is_object(schema: dict[str, Any]) -> bool:
+    properties = schema.get("properties")
+    return (
+        schema.get("type") in ("object", None) and isinstance(properties, dict) and bool(properties)
+    )
+
+
+def _typed_dict_source(name: str, fields: _Fields, optional: bool) -> str:
+    """Class syntax, or the functional syntax when a key isn't an identifier."""
+    total = ", total=False" if optional else ""
+    if all(key.isidentifier() and not keyword.iskeyword(key) for key, _ in fields):
+        body = "".join(f"\n    {key}: {ty}" for key, ty in fields)
+        return f"class {name}(TypedDict{total}):{body}"
+    items = ", ".join(f"{key!r}: {ty!r}" for key, ty in fields)
+    return f"{name} = TypedDict({name!r}, {{{items}}}{total})"
+
+
+def _referenced_defs(schema: Any, defs: dict[str, Any]) -> dict[str, Any]:
+    """The ``defs`` entries ``schema`` refers to, transitively."""
+    found: dict[str, Any] = {}
+
+    def visit(node: Any) -> None:
+        if isinstance(node, list):
+            for item in node:
+                visit(item)
+        elif isinstance(node, dict):
+            ref = node.get("$ref")
+            if isinstance(ref, str) and ref.startswith(_REF_PREFIXES):
+                name = ref.split("/")[-1]
+                if name in defs and name not in found:
+                    found[name] = defs[name]
+                    visit(defs[name])
+            for value in node.values():
+                visit(value)
+
+    visit(schema)
+    return found
+
+
+class _ModuleTypes:
+    """The ``TypedDict`` return types of one module's tools, shared by shape.
+
+    Identical shapes get one class, so the catalog defines a shape that many
+    tools return once. A class is named after its schema (a ``$defs`` key or
+    ``title``), else the property holding it; when a different shape already
+    has that name, the parent's name is prefixed, then a number appended. An
+    untitled top-level object is the tool's own ``<Tool>Response``, never shared.
+    """
+
+    def __init__(self, reserved: set[str]) -> None:
+        self.sources: dict[str, str] = {}
+        self._by_shape: dict[str, str] = {}
+        self._reserved = _TYPING_NAMES | reserved
+
+    def uses(self, type_expr: str) -> tuple[str, ...]:
+        """Sources of the classes ``type_expr`` refers to, transitively, parents first."""
+        names: dict[str, None] = {}
+
+        def visit(text: str) -> None:
+            for word in re.findall(r"\w+", text):
+                if word in self.sources and word not in names:
+                    names[word] = None
+                    visit(self.sources[word])
+
+        visit(type_expr)
+        return tuple(self.sources[name] for name in names)
+
+    def type_of(
+        self,
+        schema: Any,
+        *,
+        short: str,
+        parent: str,
+        defs: dict[str, Any],
+        depth: int = 0,
+        own: bool = False,
+    ) -> str:
+        """Convert a response schema to a type expression, defining its classes.
+
+        ``short`` names an object found here; ``parent`` is the enclosing
+        class's preferred name, used to qualify ``short`` on a clash. ``own``
+        marks the tool's top level, whose untitled object isn't shared.
+        """
+        schema = _effective_schema(schema)
+        if depth >= _MAX_SCHEMA_DEPTH:
+            return "Any"
+        ty = schema.get("type")
+        ref = schema.get("$ref")
+        variants = schema.get("anyOf") or schema.get("oneOf")
+        extra = schema.get("additionalProperties")
+        title = schema.get("title")
+
+        def child(sub: Any, short: str, own: bool = False) -> str:
+            return self.type_of(
+                sub, short=short, parent=parent, defs=defs, depth=depth + 1, own=own
+            )
+
+        if isinstance(ref, str) and ref.startswith(_REF_PREFIXES) and ref.split("/")[-1] in defs:
+            name = ref.split("/")[-1]
+            parts = [self._ref(name, defs[name], parent=parent, defs=defs, depth=depth)]
+        elif "enum" in schema:
+            return _schema_to_type(schema)
+        elif isinstance(variants, list) and variants:
+            parts = [child(v, short, own) for v in variants]
+        elif isinstance(ty, list):
+            rest = {k: v for k, v in schema.items() if k not in ("type", "nullable")}
+            parts = [child({**rest, "type": t}, short, own) for t in ty]
+        elif _is_object(schema):
+            candidates = [_pascal(title)] if isinstance(title, str) and title else []
+            names = [*candidates, short, parent + short]
+            share = bool(candidates) or not own
+            parts = [self._object(schema, names, defs, depth, share=share)]
+        elif ty == "object" and isinstance(extra, dict) and extra:
+            parts = [f"dict[str, {child(extra, f'{short}Value')}]"]
+        elif ty == "array" and (isinstance(schema.get("items"), dict) or schema.get("prefixItems")):
+            # JSON arrays reach code as lists, so `prefixItems` slots join the item union.
+            items = schema.get("items")
+            slots = [
+                *(schema.get("prefixItems") or []),
+                *([items] if isinstance(items, dict) else []),
+            ]
+            elements = list(dict.fromkeys(child(slot, f"{short}Item") for slot in slots))
+            parts = [f"list[{'Any' if 'Any' in elements else ' | '.join(elements)}]"]
+        else:
+            return _schema_to_type(schema)
+        unique = list(dict.fromkeys(parts))
+        if "Any" in unique:
+            return "Any"
+        if schema.get("nullable") and "None" not in unique:
+            unique.append("None")
+        return " | ".join(unique)
+
+    def _claim(self, candidates: list[str]) -> str:
+        valid = [
+            name
+            for name in candidates
+            if name.isidentifier() and not keyword.iskeyword(name) and name not in self._reserved
+        ] or ["Type"]
+        numbered = (f"{valid[0]}{n}" for n in itertools.count(2))
+        name = next(name for name in itertools.chain(valid, numbered) if name not in self.sources)
+        self.sources[name] = ""  # Taken; the source follows once the fields are rendered.
+        return name
+
+    def _fields(
+        self, schema: dict[str, Any], *, parent: str, defs: dict[str, Any], depth: int
+    ) -> tuple[_Fields, bool]:
+        """Each property's type, and whether every key is optional (none required)."""
+        required = {key for key in schema.get("required") or [] if isinstance(key, str)}
+        fields = []
+        for key, raw in schema["properties"].items():
+            ty = self.type_of(raw, short=_pascal(key), parent=parent, defs=defs, depth=depth + 1)
+            fields.append((key, f"NotRequired[{ty}]" if required and key not in required else ty))
+        return tuple(fields), not required
+
+    def _object(
+        self,
+        schema: dict[str, Any],
+        candidates: list[str],
+        defs: dict[str, Any],
+        depth: int,
+        *,
+        share: bool,
+    ) -> str:
+        fields, optional = self._fields(schema, parent=candidates[0], defs=defs, depth=depth)
+        shape = repr((fields, optional))
+        if share and shape in self._by_shape:
+            return self._by_shape[shape]
+        name = self._claim(candidates)
+        self.sources[name] = _typed_dict_source(name, fields, optional)
+        if share:
+            self._by_shape[shape] = name
+        return name
+
+    def _ref(self, name: str, target: Any, *, parent: str, defs: dict[str, Any], depth: int) -> str:
+        """A ``$defs`` entry, named after its key. Claimed before its fields, so it may recurse."""
+        target = _effective_schema(target)
+        if not _is_object(target):
+            return self.type_of(
+                target, short=_pascal(name), parent=parent, defs=defs, depth=depth + 1
+            )
+        key = [target, _referenced_defs(target, defs)]
+        shape = "$ref " + json.dumps(key, sort_keys=True, default=str)
+        if shape not in self._by_shape:
+            cls = self._by_shape[shape] = self._claim([_pascal(name), parent + _pascal(name)])
+            fields, optional = self._fields(target, parent=cls, defs=defs, depth=depth)
+            self.sources[cls] = _typed_dict_source(cls, fields, optional)
+            self._by_shape.setdefault(repr((fields, optional)), cls)
+        return self._by_shape[shape]
 
 
 def _sanitise_param(raw: str) -> str:
@@ -560,6 +769,9 @@ class RenderedParam:
 class RenderedTool:
     """Structured tool ready for stub or catalog rendering.
 
+    A tool with exactly one required parameter takes it positionally or by
+    keyword; every other parameter is keyword-only.
+
     Argument forwarding rules (Option A):
 
     - Required, no schema default: ``name: T``; always forwarded.
@@ -579,10 +791,14 @@ class RenderedTool:
     namespace: str | None
     docstring: str
     params: tuple[RenderedParam, ...]
+    return_type: str
+    types: tuple[str, ...]
+    """Source of each ``TypedDict`` the return type uses, transitively, parents first."""
 
     def signature_for(self, target: Target) -> str:
-        """Return the ``def name(...) -> Any:`` line for the requested target."""
-        return f"def {self.attribute}({_render_params(self.params, target=target)}) -> Any:"
+        """Return the ``def name(...) -> T:`` line for the requested target."""
+        params = _render_params(self.params, target=target)
+        return f"def {self.attribute}({params}) -> {self.return_type}:"
 
     @property
     def needs_missing_sentinel(self) -> bool:
@@ -590,12 +806,13 @@ class RenderedTool:
 
 
 def _render_params(params: tuple[RenderedParam, ...], *, target: Target) -> str:
-    """Render the keyword-only parameter list."""
-    if not params:
-        return ""
-    pieces: list[str] = ["*"]
+    """Render the parameter list; a sole required parameter may be positional."""
+    pieces: list[str] = []
     optional_default = "_MISSING" if target == "stub" else "..."
-    for p in params:
+    positional = sum(p.is_required for p in params) == 1
+    for i, p in enumerate(params):
+        if i == int(positional):
+            pieces.append("*")
         if p.is_required:
             if p.schema_default is None:
                 pieces.append(f"{p.py_name}: {p.type_expr}")
@@ -630,12 +847,31 @@ class StubFile:
     source: str
 
 
-def render_tool(nt: NamespacedTool) -> RenderedTool:
-    """Build a ``RenderedTool`` for a normalised tool.
+def render_tools(tools: list[NamespacedTool]) -> list[RenderedTool]:
+    """Build a ``RenderedTool`` for each tool, in order.
 
     Captures everything stub and catalog rendering need: signature parts,
-    formatted docstring, dotted path, namespace.
+    return type and its ``TypedDict``s, formatted docstring, dotted path,
+    namespace. Tools of one module share their ``TypedDict``s; names are
+    claimed in attribute order, so stubs and the catalog agree on them.
     """
+    modules = {
+        ns: _ModuleTypes({t.attribute for t in tools if t.namespace == ns})
+        for ns in {t.namespace for t in tools}
+    }
+    rendered = {
+        id(nt): _render_tool(nt, modules[nt.namespace])
+        for nt in sorted(tools, key=lambda t: t.attribute)
+    }
+    return [rendered[id(nt)] for nt in tools]
+
+
+def render_tool(nt: NamespacedTool) -> RenderedTool:
+    """Build a ``RenderedTool`` for a single tool; see ``render_tools``."""
+    return render_tools([nt])[0]
+
+
+def _render_tool(nt: NamespacedTool, types: _ModuleTypes) -> RenderedTool:
     declaration = nt.resolved.tool._get_declaration()
     schema: dict[str, Any] = _schema_dict_from_declaration(declaration)
 
@@ -681,30 +917,48 @@ def render_tool(nt: NamespacedTool) -> RenderedTool:
         description = nt.resolved.tool.description
     docstring = _format_docstring(description=description, param_docs=param_docs)
 
+    tool = nt.resolved.tool
+    inner = tool._wrapped if isinstance(tool, ToolResultArtifactTool) else tool
+    response = output_schema(inner) or getattr(declaration, "response_json_schema", None)
+    return_type = "Any"
+    if isinstance(response, dict) and response:
+        defs = {**(response.get("definitions") or {}), **(response.get("$defs") or {})}
+        short = _pascal(nt.attribute) + "Response"
+        return_type = types.type_of(response, short=short, parent="", defs=defs, own=True)
+
     return RenderedTool(
         attribute=nt.attribute,
         dotted_path=nt.dotted_path,
         namespace=nt.namespace,
         docstring=docstring,
         params=tuple(params),
+        return_type=return_type,
+        types=types.uses(return_type),
     )
 
 
 def render_tool_source(rt: RenderedTool) -> str:
     """Render the on-disk Python stub source for a tool."""
     sig = rt.signature_for("stub")
+    # `NotRequired` is 3.11+; annotations are never evaluated, so a sandbox on
+    # 3.10 only needs the import kept out of runtime.
+    not_required = any("NotRequired[" in t for t in rt.types)
     lines: list[str] = [
         "# Generated by adk-code-mode. Do not edit.",
         "from __future__ import annotations",
         "",
-        "from typing import Any, Literal",
+        f"from typing import {'TYPE_CHECKING, ' if not_required else ''}Any, Literal, TypedDict",
         "",
         "from adk_code_mode_sandbox._rpc_client import call as _call",
         "",
-        "",
     ]
+    if not_required:
+        lines.extend(["if TYPE_CHECKING:", "    from typing import NotRequired", ""])
+    lines.append("")
     if rt.needs_missing_sentinel:
         lines.extend(["_MISSING = object()", "", ""])
+    for source in rt.types:
+        lines.extend([source, "", ""])
     lines.append(sig)
     lines.append(f"    {rt.docstring}")
 
@@ -784,10 +1038,8 @@ def render_tree(namespaced: list[NamespacedTool]) -> list[StubFile]:
     for nt in per_tool:
         grouped.setdefault(nt.namespace, []).append(nt)
 
-    for nt in per_tool:
-        ns = nt.namespace
-        sub = "" if ns is None else f"{ns}/"
-        rendered = render_tool(nt)
+    for nt, rendered in zip(per_tool, render_tools(per_tool)):
+        sub = "" if nt.namespace is None else f"{nt.namespace}/"
         files.append(StubFile(path=f"{sub}{nt.attribute}.py", source=render_tool_source(rendered)))
 
     for ns, tools in grouped.items():
@@ -813,5 +1065,6 @@ __all__ = [
     "render_root_init",
     "render_tool",
     "render_tool_source",
+    "render_tools",
     "render_tree",
 ]

@@ -4,15 +4,19 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass, field
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 from google.adk.artifacts.in_memory_artifact_service import InMemoryArtifactService
 from google.adk.plugins.plugin_manager import PluginManager
 from google.adk.sessions.session import Session
 from google.adk.tools.base_tool import BaseTool
+from google.adk.tools.mcp_tool.mcp_tool import McpTool
 from google.genai import types as genai_types
+from mcp.types import Tool as McpToolSpec
 
 from adk_code_mode.tool_failures import HTTPStatusError
 from adk_code_mode.tool_result_artifacts import ToolResultArtifactTool
@@ -401,3 +405,52 @@ async def test_other_tools_returning_an_error_key_are_left_alone() -> None:
     result = await d.dispatch("lookup", {})
     assert result.ok is True
     assert result.value == {"error": "Nothing matched"}
+
+
+class _FakeMcpTool(McpTool):
+    def __init__(self, result: Any, *, output_schema: dict[str, Any] | None) -> None:
+        spec = McpToolSpec(
+            name="lookup", inputSchema={"type": "object"}, outputSchema=output_schema
+        )
+        super().__init__(mcp_tool=spec, mcp_session_manager=MagicMock())
+        self._result = result
+
+    async def run_async(self, *, args: dict[str, Any], tool_context: Any) -> Any:
+        return self._result
+
+
+_MCP_RESULT = {
+    "content": [{"type": "text", "text": '{"id": "b1"}'}],
+    "structuredContent": {"id": "b1"},
+    "isError": False,
+}
+
+
+async def test_mcp_tool_with_output_schema_returns_structured_content() -> None:
+    seen: list[Any] = []
+
+    def after(tool: BaseTool, args: dict[str, Any], tool_context: Any, tool_response: Any) -> Any:
+        seen.append(tool_response)
+        return None
+
+    tool = ToolResultArtifactTool(_FakeMcpTool(_MCP_RESULT, output_schema={"type": "object"}))
+    ctx = _make_ctx(_FakeAgent(canonical_after_tool_callbacks=[after]))
+    d = Dispatcher(invocation_context=ctx, registry=_registry(tool), execution_id="e1")  # type: ignore[arg-type]
+    result = await d.dispatch("lookup", {})
+    assert result.ok is True
+    assert result.value == {"id": "b1"}
+    assert seen == [_MCP_RESULT]  # Callbacks still see ADK's result.
+    # The artifact holds what code got, so reloading it gives the same value.
+    [key] = await ctx.artifact_service.list_artifact_keys(app_name="a", user_id="u", session_id="s")
+    saved = await ctx.artifact_service.load_artifact(
+        app_name="a", user_id="u", session_id="s", filename=key
+    )
+    assert saved is not None and saved.inline_data is not None
+    assert json.loads(saved.inline_data.data or b"") == {"id": "b1"}
+
+
+async def test_mcp_tool_without_output_schema_returns_the_whole_result() -> None:
+    tool = _FakeMcpTool(_MCP_RESULT, output_schema=None)
+    d = Dispatcher(invocation_context=_make_ctx(), registry=_registry(tool), execution_id="e1")  # type: ignore[arg-type]
+    result = await d.dispatch("lookup", {})
+    assert result.value == _MCP_RESULT

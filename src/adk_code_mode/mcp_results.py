@@ -1,14 +1,7 @@
 # SPDX-FileCopyrightText: 2025-present Agenta <hello@buildagenta.com>
 #
 # SPDX-License-Identifier: Apache-2.0
-"""Return an MCP tool's ``structuredContent`` to code instead of the whole result.
-
-ADK's ``McpTool`` returns the full ``CallToolResult`` (``content``,
-``structuredContent``, ``isError``). When the tool declares an ``outputSchema``,
-the MCP spec requires ``structuredContent`` to match it, and ``content`` is meant to
-be a serialised copy for older clients. So code gets ``structuredContent`` alone,
-and the stub's return type is built from the ``outputSchema``.
-"""
+"""Describe the MCP result envelope returned by ADK."""
 
 from __future__ import annotations
 
@@ -18,19 +11,20 @@ from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.mcp_tool.mcp_tool import McpTool
 
 
-def output_schema(tool: BaseTool) -> dict[str, Any] | None:
-    """Return the ``outputSchema`` of an MCP tool, or ``None`` for any other tool.
+def response_schema(tool: BaseTool) -> dict[str, Any] | None:
+    """Describe an MCP result and type its structured content from the tool's output schema."""
+    if not isinstance(tool, McpTool) or not (output := tool.raw_mcp_tool.outputSchema):
+        return None
+    return {
+        **{key: output[key] for key in ("$defs", "definitions") if key in output},
+        "type": "object",
+        "properties": {
+            "content": {"type": "array", "items": {}},
+            "isError": {"type": "boolean"},
+            "structuredContent": {"anyOf": [output, {"type": "null"}]},
+        },
+        "required": ["content", "isError"],
+    }
 
-    ``tool`` is the tool itself, not a ``ToolResultArtifactTool`` wrapping it.
-    """
-    return tool.raw_mcp_tool.outputSchema if isinstance(tool, McpTool) else None
 
-
-def structured_result(tool: BaseTool, result: Any) -> Any:
-    """Return ``structuredContent`` when ``tool`` is an MCP tool with an ``outputSchema``."""
-    if output_schema(tool) and isinstance(result, dict) and "structuredContent" in result:
-        return result["structuredContent"]
-    return result
-
-
-__all__ = ["output_schema", "structured_result"]
+__all__ = ["response_schema"]

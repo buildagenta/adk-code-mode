@@ -18,15 +18,18 @@ class _SchemaTool(BaseTool):
         *,
         description: str,
         schema: dict[str, object] | None = None,
+        response: dict[str, object] | None = None,
     ) -> None:
         super().__init__(name=name, description=description)
         self._schema = schema or {}
+        self._response = response
 
     def _get_declaration(self) -> genai_types.FunctionDeclaration | None:
         return genai_types.FunctionDeclaration(
             name=self.name,
             description=self.description,
             parameters_json_schema=self._schema,
+            response_json_schema=self._response,
         )
 
 
@@ -104,3 +107,47 @@ def test_render_catalog_groups_tools_by_namespace_and_sorts() -> None:
     gmail_idx = catalog.index("# tools.gmail")
     slack_idx = catalog.index("# tools.slack")
     assert gmail_idx < slack_idx, "namespaces sorted alphabetically"
+
+
+def test_render_catalog_defines_shared_module_types_once_before_signatures() -> None:
+    bookings = _FakeToolset("bookings")
+    item = {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}
+    get = _SchemaTool(
+        "get_booking",
+        description="Get a booking.",
+        response={"type": "object", "properties": {"booking": item}},
+    )
+    search = _SchemaTool("search", description="Search.", response={"type": "array", "items": item})
+    ping = _SchemaTool("ping", description="Ping.")
+    catalog = render_catalog(_build([(get, bookings), (search, bookings), (ping, bookings)]))
+    assert catalog == (
+        "# tools.bookings\n\n"
+        "from tools.bookings import get_booking, ping, search\n\n"
+        "class GetBookingResponse(TypedDict, total=False):\n"
+        "    booking: Booking\n\n"
+        "class Booking(TypedDict):\n"
+        "    id: str\n\n"
+        "def get_booking() -> GetBookingResponse:\n"
+        '    """Get a booking.\n    """\n'
+        "    ...\n\n"
+        "def ping() -> Any:\n"
+        '    """Ping.\n    """\n'
+        "    ...\n\n"
+        "def search() -> list[Booking]:\n"
+        '    """Search.\n    """\n'
+        "    ...\n"
+    )
+
+
+def test_render_catalog_keeps_class_names_unique_across_modules() -> None:
+    def record(key: str) -> dict[str, object]:
+        return {"title": "Record", "type": "object", "properties": {key: {"type": "string"}}}
+
+    tasks, teams = _FakeToolset("tasks"), _FakeToolset("teams")
+    get_task = _SchemaTool("get_task", description="Get a task.", response=record("count"))
+    get_team = _SchemaTool("get_team", description="Get a team.", response=record("id"))
+    catalog = render_catalog(_build([(get_task, tasks), (get_team, teams)]))
+    assert "def get_task() -> Record:" in catalog
+    assert "class Record(TypedDict, total=False):\n    count: str\n" in catalog
+    assert "def get_team() -> GetTeamResponse:" in catalog
+    assert "class GetTeamResponse(TypedDict, total=False):\n    id: str\n" in catalog

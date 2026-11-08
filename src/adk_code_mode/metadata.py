@@ -26,7 +26,7 @@ from __future__ import annotations
 from typing import Any
 
 from adk_code_mode.runtime.protocol import ReadyFrame
-from adk_code_mode.tools.catalog import render_catalog
+from adk_code_mode.tools.catalog import Detail, render_catalog
 from adk_code_mode.tools.namespacing import NamespacedTool
 
 _OPEN = "<code-mode>"
@@ -39,9 +39,20 @@ HOW_TO_USE = (
     "functions you can import from the `tools` package."
 )
 
-DISCOVER_TOOLS = "List `/tools/` and read a file's docstring to see what's available."
+# Every tier without signatures needs these: the full tier shows them inline.
+READ_BEFORE_CALLING = (
+    "Before calling a function you haven't used, print its stub to see its "
+    "signature, docstring and the fields of its return type: "
+    "`/tools/<module>/<fn>.py`, or `/tools/<fn>.py` for a function imported from "
+    "`tools`. Print every stub you need in one `execute_code` call."
+)
 
-_TOOLS_TOO_LARGE = f"The full catalog is too large to include here. {DISCOVER_TOOLS}"
+DISCOVER_TOOLS = (
+    f"List `/tools/` and its module directories to find the functions available. "
+    f"{READ_BEFORE_CALLING}"
+)
+
+_TOOLS_TOO_LARGE = "The full catalog is too large to include here."
 
 # identity -> (python version, {import name: {distribution name: version}})
 _ENVIRONMENTS: dict[str, tuple[str, dict[str, dict[str, str]]]] = {}
@@ -96,8 +107,10 @@ def render(*, identity: str, namespaced: list[NamespacedTool], max_chars: int) -
     """Render the ``<code-mode>`` block, degrading until it fits ``max_chars``.
 
     ``max_chars`` is measured against the final string, tags included. Tiers,
-    in order: the full catalog; import lines only (no signatures or
-    docstrings); a pointer telling the model to read ``/tools/`` itself. The
+    in order: the full catalog; import lines only (no types, signatures or
+    docstrings), with ``READ_BEFORE_CALLING`` added to the how-to-use text; a
+    pointer, with ``DISCOVER_TOOLS`` added instead, telling the model to read
+    ``/tools/`` itself. The
     last tier is unconditional — an oversized tool surface must never cost the
     model the Python version and package list, which are small and which it
     cannot discover any other way.
@@ -108,9 +121,9 @@ def render(*, identity: str, namespaced: list[NamespacedTool], max_chars: int) -
     """
     python_version, packages = _ENVIRONMENTS.get(identity, ("", {}))
 
-    head = [_tag("how-to-use", HOW_TO_USE)]
+    environment: list[str] = []
     if python_version:
-        head.append(_inline_tag("python-version", python_version))
+        environment.append(_inline_tag("python-version", python_version))
     if packages:
         lines = []
         for import_name, distributions in sorted(
@@ -127,21 +140,29 @@ def render(*, identity: str, namespaced: list[NamespacedTool], max_chars: int) -
             if providers:
                 lines.append(f"{import_name}: {providers}")
         if lines:
-            head.append(_tag("installed-packages", "\n".join(lines)))
+            environment.append(_tag("installed-packages", "\n".join(lines)))
 
+    how_to_use = _tag("how-to-use", HOW_TO_USE)
     if not namespaced:
-        return _wrap(head)
+        return _wrap([how_to_use, *environment])
 
-    for detail in ("full", "names"):
-        block = _wrap([*head, _tag("tools-package", render_catalog(namespaced, detail=detail))])
+    tiers: list[tuple[Detail, str]] = [
+        ("full", how_to_use),
+        ("names", _tag("how-to-use", f"{HOW_TO_USE} {READ_BEFORE_CALLING}")),
+    ]
+    for detail, tier_how_to_use in tiers:
+        catalog = _tag("tools-package", render_catalog(namespaced, detail=detail))
+        block = _wrap([tier_how_to_use, *environment, catalog])
         if len(block) <= max_chars:
             return block
-    return _wrap([*head, _tag("tools-package", _TOOLS_TOO_LARGE)])
+    discover = _tag("how-to-use", f"{HOW_TO_USE} {DISCOVER_TOOLS}")
+    return _wrap([discover, *environment, _tag("tools-package", _TOOLS_TOO_LARGE)])
 
 
 __all__ = [
     "DISCOVER_TOOLS",
     "HOW_TO_USE",
+    "READ_BEFORE_CALLING",
     "backend_identity",
     "record",
     "render",

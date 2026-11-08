@@ -75,6 +75,40 @@ def test_description_tells_the_model_the_timeout() -> None:
     assert "Each call can run for up to" not in unbounded.description
 
 
+@pytest.mark.parametrize(
+    ("artifact_tools", "tool_results", "expected"),
+    [
+        (
+            True,
+            True,
+            " Every file the code writes in the working directory, and every tool's result,"
+            " is saved as an artifact; use `load_artifact` (imported the same way) to read"
+            " one in a later turn.",
+        ),
+        (
+            True,
+            False,
+            " Every file the code writes in the working directory is saved as an artifact;"
+            " use `load_artifact` (imported the same way) to read one in a later turn.",
+        ),
+        (
+            False,
+            False,
+            " Every file the code writes in the working directory is saved as an artifact.",
+        ),
+    ],
+)
+def test_description_says_what_is_saved_and_how_to_load_it(
+    artifact_tools: bool, tool_results: bool, expected: str
+) -> None:
+    tool = ExecuteCodeTool(
+        backend=FakeRuntime(),
+        include_artifact_tools=artifact_tools,
+        save_tool_results_as_artifacts=tool_results,
+    )
+    assert expected in tool.description
+
+
 def test_tools_and_backend_properties_expose_the_configured_surface() -> None:
     schema_tool = _SchemaTool("ping", "Ping.")
     backend = FakeRuntime()

@@ -26,9 +26,19 @@ import textwrap
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from adk_code_mode.mcp_results import output_schema
+from adk_code_mode.mcp_results import response_schema
 from adk_code_mode.tool_result_artifacts import ToolResultArtifactTool
 from adk_code_mode.tools.namespacing import NamespacedTool, PythonNameCollisionError
+
+_TOOL_RESULT_ARTIFACT_SCHEMA = {
+    "title": "ToolResultArtifact",
+    "type": "object",
+    "properties": {
+        "tool_result_artifact": {"type": "string"},
+        "note": {"type": "string"},
+    },
+    "required": ["tool_result_artifact", "note"],
+}
 
 _PRIMITIVES = {
     "string": "str",
@@ -596,15 +606,16 @@ class _ModuleTypes:
 
     Identical shapes get one class, so the catalog defines a shape that many
     tools return once. A class is named after its schema (a ``$defs`` key or
-    ``title``), else the property holding it; when a different shape already
-    has that name, the parent's name is prefixed, then a number appended. An
+    ``title``), else the property holding it; when that name is taken, in any
+    module, the parent's name is prefixed, then a number appended. An
     untitled top-level object is the tool's own ``<Tool>Response``, never shared.
     """
 
-    def __init__(self, reserved: set[str]) -> None:
+    def __init__(self, taken: set[str]) -> None:
         self.sources: dict[str, str] = {}
         self._by_shape: dict[str, str] = {}
-        self._reserved = _TYPING_NAMES | reserved
+        # Shared by every module, so a name means one class across the catalog.
+        self._taken = taken
 
     def uses(self, type_expr: str) -> tuple[str, ...]:
         """Sources of the classes ``type_expr`` refers to, transitively, parents first."""
@@ -688,10 +699,11 @@ class _ModuleTypes:
         valid = [
             name
             for name in candidates
-            if name.isidentifier() and not keyword.iskeyword(name) and name not in self._reserved
+            if name.isidentifier() and not keyword.iskeyword(name) and name not in _TYPING_NAMES
         ] or ["Type"]
         numbered = (f"{valid[0]}{n}" for n in itertools.count(2))
-        name = next(name for name in itertools.chain(valid, numbered) if name not in self.sources)
+        name = next(name for name in itertools.chain(valid, numbered) if name not in self._taken)
+        self._taken.add(name)
         self.sources[name] = ""  # Taken; the source follows once the fields are rendered.
         return name
 
@@ -853,12 +865,11 @@ def render_tools(tools: list[NamespacedTool]) -> list[RenderedTool]:
     Captures everything stub and catalog rendering need: signature parts,
     return type and its ``TypedDict``s, formatted docstring, dotted path,
     namespace. Tools of one module share their ``TypedDict``s; names are
-    claimed in attribute order, so stubs and the catalog agree on them.
+    unique across modules and claimed in attribute order, so stubs and the
+    catalog agree on them.
     """
-    modules = {
-        ns: _ModuleTypes({t.attribute for t in tools if t.namespace == ns})
-        for ns in {t.namespace for t in tools}
-    }
+    taken = {t.attribute for t in tools}
+    modules = {ns: _ModuleTypes(taken) for ns in {t.namespace for t in tools}}
     rendered = {
         id(nt): _render_tool(nt, modules[nt.namespace])
         for nt in sorted(tools, key=lambda t: t.attribute)
@@ -918,13 +929,19 @@ def _render_tool(nt: NamespacedTool, types: _ModuleTypes) -> RenderedTool:
     docstring = _format_docstring(description=description, param_docs=param_docs)
 
     tool = nt.resolved.tool
+    wraps_result = isinstance(tool, ToolResultArtifactTool)
     inner = tool._wrapped if isinstance(tool, ToolResultArtifactTool) else tool
-    response = output_schema(inner) or getattr(declaration, "response_json_schema", None)
+    response = response_schema(inner) or getattr(declaration, "response_json_schema", None)
     return_type = "Any"
     if isinstance(response, dict) and response:
         defs = {**(response.get("definitions") or {}), **(response.get("$defs") or {})}
         short = _pascal(nt.attribute) + "Response"
         return_type = types.type_of(response, short=short, parent="", defs=defs, own=True)
+        if wraps_result and return_type != "Any":
+            pointer = types.type_of(
+                _TOOL_RESULT_ARTIFACT_SCHEMA, short="ToolResultArtifact", parent="", defs={}
+            )
+            return_type = f"{return_type} | {pointer}"
 
     return RenderedTool(
         attribute=nt.attribute,

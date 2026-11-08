@@ -16,8 +16,10 @@ name and call id. The model may optionally pass ``artifact_name`` /
 markers, land in the artifact's ``custom_metadata`` so a host (e.g. an A2A layer)
 can decide whether and how to forward the result to the user.
 
-The result is always returned unchanged; the artifact lets a later turn reload it
-with ``load_artifact``.
+Small results are returned to the model unchanged. Results whose serialised form
+exceeds ``large_result_threshold`` are replaced with a short notice pointing at
+the artifact, keeping large payloads out of the model's context while remaining
+reloadable with ``load_artifact``.
 """
 
 from __future__ import annotations
@@ -30,8 +32,6 @@ from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 
-from adk_code_mode.mcp_results import structured_result
-from adk_code_mode._json import json_safe
 from adk_code_mode.tool_failures import raise_for_failed_result
 
 # Transport-neutral metadata stamped on saved tool-result artifacts. Downstream
@@ -40,6 +40,8 @@ TOOL_RESULT_METADATA_KEY = "code_mode.tool_result"
 TOOL_RESULT_NAME_KEY = "code_mode.artifact_name"
 TOOL_RESULT_DESCRIPTION_KEY = "code_mode.artifact_description"
 TOOL_RESULT_FILENAME_KEY = "code_mode.artifact_filename"
+
+DEFAULT_LARGE_RESULT_THRESHOLD = 50_000
 
 _ARTIFACT_NAME_PARAM = "artifact_name"
 _ARTIFACT_DESCRIPTION_PARAM = "artifact_description"
@@ -53,13 +55,19 @@ class ToolResultArtifactTool(BaseTool):
     ``artifact_description``, for naming the saved artifact.
     """
 
-    def __init__(self, wrapped: BaseTool) -> None:
+    def __init__(
+        self,
+        wrapped: BaseTool,
+        *,
+        large_result_threshold: int = DEFAULT_LARGE_RESULT_THRESHOLD,
+    ) -> None:
         super().__init__(
             name=wrapped.name,
             description=wrapped.description,
             is_long_running=wrapped.is_long_running,
         )
         self._wrapped = wrapped
+        self._large_result_threshold = large_result_threshold
         # Don't shadow a real tool parameter that happens to share the name.
         existing = _declared_param_names(wrapped)
         self._inject_name = _ARTIFACT_NAME_PARAM not in existing
@@ -107,8 +115,7 @@ class ToolResultArtifactTool(BaseTool):
         stem = artifact_name or _default_stem(self.name, tool_context)
         filename = f"{stem}.json"
 
-        # Save what code receives, so reloading the artifact gives the same value.
-        data, mime_type = _serialise_result(structured_result(self._wrapped, result))
+        data, mime_type = _serialise_result(result)
         metadata: dict[str, Any] = {
             TOOL_RESULT_METADATA_KEY: "true",
             TOOL_RESULT_FILENAME_KEY: filename,
@@ -127,12 +134,23 @@ class ToolResultArtifactTool(BaseTool):
         )
 
         raise_for_failed_result(self._wrapped, result)
+        if len(data) > self._large_result_threshold:
+            return {
+                "tool_result_artifact": filename,
+                "note": (
+                    f"The tool result ({len(data):,} bytes) was saved as an artifact "
+                    f"{filename!r} instead of being returned inline. Reload it with "
+                    f"load_artifact(filename={filename!r})."
+                ),
+            }
         return result
 
 
-def wrap_tool_result_as_artifact(tool: BaseTool) -> ToolResultArtifactTool:
+def wrap_tool_result_as_artifact(
+    tool: BaseTool, *, large_result_threshold: int = DEFAULT_LARGE_RESULT_THRESHOLD
+) -> ToolResultArtifactTool:
     """Wrap ``tool`` so its results are saved as session artifacts."""
-    return ToolResultArtifactTool(tool)
+    return ToolResultArtifactTool(tool, large_result_threshold=large_result_threshold)
 
 
 def _declared_param_names(tool: BaseTool) -> set[str]:
@@ -158,10 +176,11 @@ def _serialise_result(result: Any) -> tuple[bytes, str]:
         return bytes(result), "application/octet-stream"
     if isinstance(result, str):
         return result.encode("utf-8"), "text/plain; charset=utf-8"
-    return json.dumps(json_safe(result), ensure_ascii=False).encode("utf-8"), "application/json"
+    return json.dumps(result, default=str, ensure_ascii=False).encode("utf-8"), "application/json"
 
 
 __all__ = [
+    "DEFAULT_LARGE_RESULT_THRESHOLD",
     "TOOL_RESULT_DESCRIPTION_KEY",
     "TOOL_RESULT_FILENAME_KEY",
     "TOOL_RESULT_METADATA_KEY",

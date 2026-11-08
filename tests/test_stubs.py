@@ -593,6 +593,14 @@ def test_a_name_taken_by_another_shape_is_qualified_by_its_parent() -> None:
     assert b_rt.types[1] == "class BResponseData(TypedDict, total=False):\n    y: Any"
 
 
+def test_an_untitled_top_level_type_belongs_to_its_tool() -> None:
+    shape: dict[str, object] = {"type": "object", "properties": {"id": {"type": "string"}}}
+    first, second = (_SchemaTool(n, description=".", response=shape) for n in ("first", "second"))
+    first_rt, second_rt = stubs.render_tools(_build([(first, None), (second, None)]))
+    assert first_rt.return_type == "FirstResponse"
+    assert second_rt.return_type == "SecondResponse"
+
+
 def test_defs_and_titles_name_classes_and_refs_may_recurse() -> None:
     tool = _SchemaTool(
         "get_team",

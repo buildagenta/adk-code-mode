@@ -574,7 +574,8 @@ class _ModuleTypes:
     Identical shapes get one class, so the catalog defines a shape that many
     tools return once. A class is named after its schema (a ``$defs`` key or
     ``title``), else the property holding it; when a different shape already
-    has that name, the parent's name is prefixed, then a number appended.
+    has that name, the parent's name is prefixed, then a number appended. An
+    untitled top-level object is the tool's own ``<Tool>Response``, never shared.
     """
 
     def __init__(self, reserved: set[str]) -> None:
@@ -627,7 +628,9 @@ class _ModuleTypes:
             parts = [child({**rest, "type": t}, short) for t in ty]
         elif _is_object(schema):
             candidates = [_pascal(title)] if isinstance(title, str) and title else []
-            parts = [self._object(schema, [*candidates, short, parent + short], defs, depth)]
+            names = [*candidates, short, parent + short]
+            # Only the top level has no parent.
+            parts = [self._object(schema, names, defs, depth, share=bool(candidates or parent))]
         elif ty == "object" and isinstance(extra, dict) and extra:
             parts = [f"dict[str, {child(extra, f'{short}Value')}]"]
         elif (
@@ -645,7 +648,7 @@ class _ModuleTypes:
             unique.append("None")
         return " | ".join(unique)
 
-    def _claim(self, shape: str, candidates: list[str]) -> str:
+    def _claim(self, candidates: list[str]) -> str:
         valid = [
             name
             for name in candidates
@@ -654,7 +657,6 @@ class _ModuleTypes:
         numbered = (f"{valid[0]}{n}" for n in itertools.count(2))
         name = next(name for name in itertools.chain(valid, numbered) if name not in self.sources)
         self.sources[name] = ""  # Taken; the source follows once the fields are rendered.
-        self._by_shape[shape] = name
         return name
 
     def _fields(
@@ -669,14 +671,23 @@ class _ModuleTypes:
         return tuple(fields), not required
 
     def _object(
-        self, schema: dict[str, Any], candidates: list[str], defs: dict[str, Any], depth: int
+        self,
+        schema: dict[str, Any],
+        candidates: list[str],
+        defs: dict[str, Any],
+        depth: int,
+        *,
+        share: bool,
     ) -> str:
         fields, optional = self._fields(schema, parent=candidates[0], defs=defs, depth=depth)
         shape = repr((fields, optional))
-        if shape not in self._by_shape:
-            name = self._claim(shape, candidates)
-            self.sources[name] = _typed_dict_source(name, fields, optional)
-        return self._by_shape[shape]
+        if share and shape in self._by_shape:
+            return self._by_shape[shape]
+        name = self._claim(candidates)
+        self.sources[name] = _typed_dict_source(name, fields, optional)
+        if share:
+            self._by_shape[shape] = name
+        return name
 
     def _ref(self, name: str, target: Any, *, parent: str, defs: dict[str, Any], depth: int) -> str:
         """A ``$defs`` entry, named after its key. Claimed before its fields, so it may recurse."""
@@ -687,7 +698,7 @@ class _ModuleTypes:
             )
         shape = "$ref " + json.dumps(target, sort_keys=True, default=str)
         if shape not in self._by_shape:
-            cls = self._claim(shape, [_pascal(name), parent + _pascal(name)])
+            cls = self._by_shape[shape] = self._claim([_pascal(name), parent + _pascal(name)])
             fields, optional = self._fields(target, parent=cls, defs=defs, depth=depth)
             self.sources[cls] = _typed_dict_source(cls, fields, optional)
             self._by_shape.setdefault(repr((fields, optional)), cls)

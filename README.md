@@ -316,7 +316,7 @@ within the same turn and reset on the next turn — use `save_artifact` /
 changed by the code are saved as artifacts automatically
 ~~~
 
-With `append_code_mode_metadata_to_system_instruction` disabled that middle sentence is replaced by `List /tools/ and read a file's docstring to see what's available.`, so the description never points at a section that wasn't appended.
+With `append_code_mode_metadata_to_system_instruction` disabled that middle sentence is replaced by the discovery text the pointer tier uses (see [Fitting the budget](#fitting-the-budget)), so the description never points at a section that wasn't appended.
 
 The **`<code-mode>` block** is the per-deployment inventory of the sandbox, appended to the system instruction on every model turn:
 
@@ -372,7 +372,10 @@ With `save_tool_results_as_artifacts` enabled (the default), each non-artifact t
 A block over `max_code_mode_metadata_chars` degrades in tiers instead of vanishing. The Python version and package list survive every tier — they're small, and the model cannot discover them any other way.
 
 1. **Full** — as above.
-2. **Names only** — types, signatures and docstrings dropped, import lines kept. `<how-to-use>` gains a line telling the model to read a function's stub (`/tools/<module>/<fn>.py`, or `/tools/<fn>.py` for a top-level function) before calling it, to see its return type's fields:
+2. **Names only** — types, signatures and docstrings dropped, import lines kept. `<how-to-use>` gains:
+
+   > Before calling a function you haven't used, print its stub to see its signature, docstring and the fields of its return type: `/tools/<module>/<fn>.py`, or `/tools/<fn>.py` for a function imported from `tools`. Print every stub you need in one `execute_code` call.
+
 
    ~~~
      <tools-package>
@@ -382,11 +385,11 @@ A block over `max_code_mode_metadata_chars` degrades in tiers instead of vanishi
      </tools-package>
    ~~~
 
-3. **Pointer** — the catalog is replaced by a discovery note, and this tier is emitted no matter how small the budget:
+3. **Pointer** — the catalog is replaced by a note, and this tier is emitted no matter how small the budget. `<how-to-use>` gains the same text, prefixed with "List `/tools/` and its module directories to find the functions available.":
 
    ~~~
      <tools-package>
-   The full catalog is too large to include here. List `/tools/` and read a file's docstring to see what's available.
+   The full catalog is too large to include here.
      </tools-package>
    ~~~
 
@@ -394,8 +397,9 @@ At the last tier the model navigates the sandbox from Python instead:
 
 ```python
 import pathlib
-print(list(pathlib.Path("/tools").iterdir()))
+print(sorted(pathlib.Path("/tools").rglob("*.py")))
 print(open("/tools/slack/send_message.py").read())  # types, signature + docstring
+print(open("/tools/slack/list_channels.py").read())
 ```
 
 Text and JSON-like MIME types travel as plain strings in artifact tools; binary content is base64-encoded. `load_artifact` returns the content itself: the parsed value for JSON, a `str` for other text, and `{"mime_type": str, "bytes": str}` (base64) for binary.

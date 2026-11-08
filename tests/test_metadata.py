@@ -168,9 +168,8 @@ def test_pointer_tier_is_unconditional() -> None:
     block = metadata.render(identity="img", namespaced=_namespaced(20), max_chars=10)
 
     assert len(block) > 10  # the floor wins over the budget
-    assert metadata.DISCOVER_TOOLS in block
-    assert metadata.HOW_TO_USE in block
-    assert metadata.READ_BEFORE_CALLING not in block
+    assert f"{metadata.HOW_TO_USE} {metadata.DISCOVER_TOOLS}" in block
+    assert metadata.READ_BEFORE_CALLING in metadata.DISCOVER_TOOLS
     assert "from tools import" not in block
 
 

@@ -39,17 +39,20 @@ HOW_TO_USE = (
     "functions you can import from the `tools` package."
 )
 
-# Only the names tier needs this: the full tier shows every signature and
-# docstring inline.
+# Every tier without signatures needs these: the full tier shows them inline.
 READ_BEFORE_CALLING = (
-    "Before calling a function you haven't used, read its source to see its "
+    "Before calling a function you haven't used, print its stub to see its "
     "signature, docstring and the fields of its return type: "
-    "`/tools/<module>/<fn>.py`, or `/tools/<fn>.py` for a function imported from `tools`."
+    "`/tools/<module>/<fn>.py`, or `/tools/<fn>.py` for a function imported from "
+    "`tools`. Print every stub you need in one `execute_code` call."
 )
 
-DISCOVER_TOOLS = "List `/tools/` and read a file's docstring to see what's available."
+DISCOVER_TOOLS = (
+    f"List `/tools/` and its module directories to find the functions available. "
+    f"{READ_BEFORE_CALLING}"
+)
 
-_TOOLS_TOO_LARGE = f"The full catalog is too large to include here. {DISCOVER_TOOLS}"
+_TOOLS_TOO_LARGE = "The full catalog is too large to include here."
 
 # identity -> (python version, {import name: {distribution name: version}})
 _ENVIRONMENTS: dict[str, tuple[str, dict[str, dict[str, str]]]] = {}
@@ -106,7 +109,8 @@ def render(*, identity: str, namespaced: list[NamespacedTool], max_chars: int) -
     ``max_chars`` is measured against the final string, tags included. Tiers,
     in order: the full catalog; import lines only (no types, signatures or
     docstrings), with ``READ_BEFORE_CALLING`` added to the how-to-use text; a
-    pointer telling the model to read ``/tools/`` itself. The
+    pointer, with ``DISCOVER_TOOLS`` added instead, telling the model to read
+    ``/tools/`` itself. The
     last tier is unconditional — an oversized tool surface must never cost the
     model the Python version and package list, which are small and which it
     cannot discover any other way.
@@ -151,7 +155,8 @@ def render(*, identity: str, namespaced: list[NamespacedTool], max_chars: int) -
         block = _wrap([tier_how_to_use, *environment, catalog])
         if len(block) <= max_chars:
             return block
-    return _wrap([how_to_use, *environment, _tag("tools-package", _TOOLS_TOO_LARGE)])
+    discover = _tag("how-to-use", f"{HOW_TO_USE} {DISCOVER_TOOLS}")
+    return _wrap([discover, *environment, _tag("tools-package", _TOOLS_TOO_LARGE)])
 
 
 __all__ = [

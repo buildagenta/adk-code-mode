@@ -17,13 +17,13 @@ from typing import Any
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.mcp_tool.mcp_tool import McpTool
 
-from adk_code_mode.tool_result_artifacts import ToolResultArtifactTool
-
 
 def output_schema(tool: BaseTool) -> dict[str, Any] | None:
-    """Return the ``outputSchema`` of an MCP tool, or ``None`` for any other tool."""
-    inner = tool._wrapped if isinstance(tool, ToolResultArtifactTool) else tool
-    return inner.raw_mcp_tool.outputSchema if isinstance(inner, McpTool) else None
+    """Return the ``outputSchema`` of an MCP tool, or ``None`` for any other tool.
+
+    ``tool`` is the tool itself, not a ``ToolResultArtifactTool`` wrapping it.
+    """
+    return tool.raw_mcp_tool.outputSchema if isinstance(tool, McpTool) else None
 
 
 def structured_result(tool: BaseTool, result: Any) -> Any:

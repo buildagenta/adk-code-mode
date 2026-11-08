@@ -536,7 +536,7 @@ def test_mcp_output_schema_becomes_typed_dict_return_type() -> None:
         "    totals: dict[str, int]\n"
         "    cursor: str | None\n"
         "    raw: Any\n"
-        "    pair: tuple[str, int]",
+        "    pair: list[str | int]",
         "BookingsItem = TypedDict('BookingsItem', "
         "{'id': 'str', 'status': \"Literal['open', 'closed']\", "
         "'guest': 'NotRequired[Guest | None]', "
@@ -641,6 +641,34 @@ def test_defs_and_titles_name_classes_and_refs_may_recurse() -> None:
     _load_stub(stubs.render_tool_source(rt))
 
 
+def test_shared_refs_follow_each_schemas_own_defs() -> None:
+    def envelope(id_type: str) -> dict[str, object]:
+        return {
+            "type": "object",
+            "properties": {"envelope": {"$ref": "#/$defs/Envelope"}},
+            "$defs": {
+                "Envelope": {"type": "object", "properties": {"item": {"$ref": "#/$defs/Item"}}},
+                "Item": {"type": "object", "properties": {"id": {"type": id_type}}},
+            },
+        }
+
+    a = _SchemaTool("a", description="A.", response=envelope("string"))
+    b = _SchemaTool("b", description="B.", response=envelope("integer"))
+    a_rt, b_rt = stubs.render_tools(_build([(a, None), (b, None)]))
+    assert a_rt.types[1:] == (
+        "class Envelope(TypedDict, total=False):\n    item: Item",
+        "class Item(TypedDict, total=False):\n    id: str",
+    )
+    assert b_rt.types[1:] == (
+        "class BResponseEnvelope(TypedDict, total=False):\n    item: BResponseEnvelopeItem",
+        "class BResponseEnvelopeItem(TypedDict, total=False):\n    id: int",
+    )
+    # The same `$defs` in another tool still share one class.
+    c = _SchemaTool("c", description="C.", response=envelope("string"))
+    a_rt, c_rt = stubs.render_tools(_build([(a, None), (c, None)]))
+    assert a_rt.types[1:] == c_rt.types[1:]
+
+
 def test_class_names_avoid_stub_imports_and_tool_names() -> None:
     tool = _SchemaTool(
         "Any",
@@ -663,10 +691,17 @@ def test_return_type_without_objects_or_schema() -> None:
         },
     )
     untyped = _SchemaTool("ping", description="Ping.")
-    count_rt, ping_rt, rows_rt = (
-        stubs.render_tool(nt) for nt in _build([(plain, None), (untyped, None), (rows, None)])
+    pair = _SchemaTool(
+        "pair",
+        description="Pair.",
+        response={"type": "array", "prefixItems": [{"type": "integer"}] * 2, "items": False},
+    )
+    count_rt, pair_rt, ping_rt, rows_rt = (
+        stubs.render_tool(nt)
+        for nt in _build([(plain, None), (pair, None), (untyped, None), (rows, None)])
     )
     assert count_rt.signature_for("stub") == "def count() -> int:"
+    assert pair_rt.signature_for("stub") == "def pair() -> list[int]:"  # JSON gives a list.
     assert ping_rt.signature_for("stub") == "def ping() -> Any:"
     assert ping_rt.types == ()
     assert rows_rt.signature_for("stub") == "def rows() -> list[RowsResponseItem]:"

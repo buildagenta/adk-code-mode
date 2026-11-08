@@ -182,7 +182,8 @@ class Dispatcher:
         async with self._merge_lock:
             _deep_merge_dicts(self._ctx.session.state, tool_context.actions.state_delta)
             self._artifact_delta.update(tool_context.actions.artifact_delta)
-        return structured_result(tool, response)
+        inner = tool._wrapped if isinstance(tool, ToolResultArtifactTool) else tool
+        return structured_result(inner, response)
 
     async def _run_with_callbacks(
         self,

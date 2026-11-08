@@ -426,7 +426,7 @@ _MCP_RESULT = {
 }
 
 
-async def test_mcp_tool_with_output_schema_returns_structured_content() -> None:
+async def test_mcp_tool_with_output_schema_keeps_the_result_envelope() -> None:
     seen: list[Any] = []
 
     def after(tool: BaseTool, args: dict[str, Any], tool_context: Any, tool_response: Any) -> Any:
@@ -438,7 +438,7 @@ async def test_mcp_tool_with_output_schema_returns_structured_content() -> None:
     d = Dispatcher(invocation_context=ctx, registry=_registry(tool), execution_id="e1")  # type: ignore[arg-type]
     result = await d.dispatch("lookup", {})
     assert result.ok is True
-    assert result.value == {"id": "b1"}
+    assert result.value == _MCP_RESULT
     assert seen == [_MCP_RESULT]  # Callbacks still see ADK's result.
     # The artifact holds what code got, so reloading it gives the same value.
     [key] = await ctx.artifact_service.list_artifact_keys(app_name="a", user_id="u", session_id="s")
@@ -446,7 +446,7 @@ async def test_mcp_tool_with_output_schema_returns_structured_content() -> None:
         app_name="a", user_id="u", session_id="s", filename=key
     )
     assert saved is not None and saved.inline_data is not None
-    assert json.loads(saved.inline_data.data or b"") == {"id": "b1"}
+    assert json.loads(saved.inline_data.data or b"") == _MCP_RESULT
 
 
 async def test_mcp_tool_without_output_schema_returns_the_whole_result() -> None:

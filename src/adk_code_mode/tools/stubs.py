@@ -26,9 +26,19 @@ import textwrap
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from adk_code_mode.mcp_results import output_schema
+from adk_code_mode.mcp_results import response_schema
 from adk_code_mode.tool_result_artifacts import ToolResultArtifactTool
 from adk_code_mode.tools.namespacing import NamespacedTool, PythonNameCollisionError
+
+_TOOL_RESULT_ARTIFACT_SCHEMA = {
+    "title": "ToolResultArtifact",
+    "type": "object",
+    "properties": {
+        "tool_result_artifact": {"type": "string"},
+        "note": {"type": "string"},
+    },
+    "required": ["tool_result_artifact", "note"],
+}
 
 _PRIMITIVES = {
     "string": "str",
@@ -919,13 +929,19 @@ def _render_tool(nt: NamespacedTool, types: _ModuleTypes) -> RenderedTool:
     docstring = _format_docstring(description=description, param_docs=param_docs)
 
     tool = nt.resolved.tool
+    wraps_result = isinstance(tool, ToolResultArtifactTool)
     inner = tool._wrapped if isinstance(tool, ToolResultArtifactTool) else tool
-    response = output_schema(inner) or getattr(declaration, "response_json_schema", None)
+    response = response_schema(inner) or getattr(declaration, "response_json_schema", None)
     return_type = "Any"
     if isinstance(response, dict) and response:
         defs = {**(response.get("definitions") or {}), **(response.get("$defs") or {})}
         short = _pascal(nt.attribute) + "Response"
         return_type = types.type_of(response, short=short, parent="", defs=defs, own=True)
+        if wraps_result and return_type != "Any":
+            pointer = types.type_of(
+                _TOOL_RESULT_ARTIFACT_SCHEMA, short="ToolResultArtifact", parent="", defs={}
+            )
+            return_type = f"{return_type} | {pointer}"
 
     return RenderedTool(
         attribute=nt.attribute,

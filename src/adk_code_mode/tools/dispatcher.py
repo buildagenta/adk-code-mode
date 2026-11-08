@@ -17,9 +17,6 @@ Call sequence matches ADK's own flow:
    ``agent.canonical_on_tool_error_callbacks``. If no replacement, re-raise.
 5. ``plugin_manager.run_after_tool_callback``
 6. ``agent.canonical_after_tool_callbacks`` (first non-``None`` replaces result)
-
-Callbacks see the result in ADK's shape; only then does an MCP tool with an
-``outputSchema`` hand code its ``structuredContent`` (see ``mcp_results``).
 """
 
 from __future__ import annotations
@@ -36,7 +33,6 @@ from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types as genai_types
 
-from adk_code_mode.mcp_results import structured_result
 from adk_code_mode.tool_failures import HTTPStatusError, raise_for_failed_result
 from adk_code_mode.tool_result_artifacts import ToolResultArtifactTool
 from adk_code_mode.tools.namespacing import Registry
@@ -182,8 +178,7 @@ class Dispatcher:
         async with self._merge_lock:
             _deep_merge_dicts(self._ctx.session.state, tool_context.actions.state_delta)
             self._artifact_delta.update(tool_context.actions.artifact_delta)
-        inner = tool._wrapped if isinstance(tool, ToolResultArtifactTool) else tool
-        return structured_result(inner, response)
+        return response
 
     async def _run_with_callbacks(
         self,

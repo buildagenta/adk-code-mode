@@ -12,6 +12,7 @@ from google.adk.tools.mcp_tool.mcp_tool import McpTool
 from google.genai import types as genai_types
 from mcp.types import Tool as McpToolSpec
 
+from adk_code_mode.tool_result_artifacts import ToolResultArtifactTool
 from adk_code_mode.tools import namespacing, stubs
 from adk_code_mode.tools.normaliser import ResolvedTool
 
@@ -531,7 +532,11 @@ def test_mcp_output_schema_becomes_typed_dict_return_type() -> None:
     rt = stubs.render_tool(_build([(tool, None)])[0])
     assert rt.signature_for("catalog") == "def get_bookings() -> GetBookingsResponse:"
     assert rt.types == (
-        "class GetBookingsResponse(TypedDict, total=False):\n"
+        "class GetBookingsResponse(TypedDict):\n"
+        "    content: list[Any]\n"
+        "    isError: bool\n"
+        "    structuredContent: NotRequired[StructuredContent | None]",
+        "class StructuredContent(TypedDict, total=False):\n"
         "    bookings: list[BookingsItem]\n"
         "    totals: dict[str, int]\n"
         "    cursor: str | None\n"
@@ -546,6 +551,17 @@ def test_mcp_output_schema_becomes_typed_dict_return_type() -> None:
     source = stubs.render_tool_source(rt)
     assert "    from typing import NotRequired\n" in source
     assert _load_stub(source)["BookingsItem"].__name__ == "BookingsItem"
+
+
+def test_wrapped_tool_return_type_includes_the_large_result_pointer() -> None:
+    tool = ToolResultArtifactTool(
+        _SchemaTool("count", description="Count records.", response={"type": "integer"})
+    )
+    rt = stubs.render_tool(_build([(tool, None)])[0])
+    assert rt.return_type == "int | ToolResultArtifact"
+    assert rt.types == (
+        "class ToolResultArtifact(TypedDict):\n    tool_result_artifact: str\n    note: str",
+    )
 
 
 def test_identical_shapes_share_one_class_across_a_module() -> None:

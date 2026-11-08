@@ -161,6 +161,8 @@ def _build_description(
     saved = f" {saved} is saved as an artifact"
     if artifact_tools:
         saved += "; use `load_artifact` (imported the same way) to read one in a later turn"
+    if tool_results:
+        saved += ". Large tool results return a `tool_result_artifact` pointer"
     limit = f" Each call can run for up to {timeout_seconds}s." if timeout_seconds else ""
     return (
         f"{_DESCRIPTION_PREFIX}{pointer}{_DESCRIPTION_OUTPUT}{saved}.{_DESCRIPTION_ERRORS}{limit}"
@@ -246,9 +248,9 @@ class ExecuteCodeTool(BaseTool):
             ``load_artifact``. Set ``False`` for a strict tool surface.
           save_tool_results_as_artifacts: If true (default), every non-artifact
             tool is wrapped so its result is also saved as a session artifact,
-            reloadable in later turns via ``load_artifact``. The code always
-            gets the full result, and the tool description says results are
-            saved. Set ``False`` to skip saving.
+            reloadable in later turns via ``load_artifact``. Large results
+            return an artifact pointer. Set ``False`` to skip saving and
+            always get the full result inline.
           append_code_mode_metadata_to_system_instruction: If true (default),
             every model turn's system instruction gets a ``<code-mode>`` block
             describing the sandbox: its Python version, its preinstalled

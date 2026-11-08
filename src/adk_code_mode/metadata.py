@@ -42,9 +42,9 @@ HOW_TO_USE = (
 # Only the names tier needs this: the full tier shows every signature and
 # docstring inline.
 READ_BEFORE_CALLING = (
-    "Each function's signature shows its parameters and its return type. Before "
-    "calling a function you haven't used, run `help(fn)` or read "
-    "`/tools/<module>/<fn>.py` to see its full signature, return type and docstring."
+    "Before calling a function you haven't used, read its source to see its "
+    "signature, docstring and the fields of its return type: "
+    "`/tools/<module>/<fn>.py`, or `/tools/<fn>.py` for a function imported from `tools`."
 )
 
 DISCOVER_TOOLS = "List `/tools/` and read a file's docstring to see what's available."

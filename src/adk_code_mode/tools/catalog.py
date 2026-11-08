@@ -26,8 +26,7 @@ def _render_entry(rt: RenderedTool) -> str:
     return f"{rt.signature_for('catalog')}\n    {rt.docstring}\n    ...\n"
 
 
-def _render_module_section(module: str, tools: list[NamespacedTool], detail: Detail) -> str:
-    rendered = render_tools(sorted(tools, key=lambda t: t.attribute))
+def _render_module_section(module: str, rendered: list[RenderedTool], detail: Detail) -> str:
     import_line = f"from {module} import {', '.join(rt.attribute for rt in rendered)}"
     # At ``names`` detail the import line, which already lists every function
     # in the module, is the whole section.
@@ -44,15 +43,16 @@ def render_catalog(namespaced: list[NamespacedTool], *, detail: Detail = "full")
     Namespaced sections come first in namespace-sorted order, then top-level
     tools. Tools within a section are sorted by attribute name for
     determinism. A section defines its tools' ``TypedDict`` return types,
-    shared by shape, once ahead of their signatures.
+    shared by shape, once ahead of their signatures. Class names are unique
+    across sections, since the catalog reads as one Python block.
 
     ``detail="names"`` drops every type, signature and docstring, leaving only
     the per-module import lines. It is the fallback when the full catalog
     doesn't fit the system-instruction budget.
     """
-    grouped: dict[str | None, list[NamespacedTool]] = {}
-    for nt in namespaced:
-        grouped.setdefault(nt.namespace, []).append(nt)
+    grouped: dict[str | None, list[RenderedTool]] = {}
+    for rt in sorted(render_tools(namespaced), key=lambda rt: rt.attribute):
+        grouped.setdefault(rt.namespace, []).append(rt)
 
     sections = [
         _render_module_section(f"tools.{ns}", grouped[ns], detail)

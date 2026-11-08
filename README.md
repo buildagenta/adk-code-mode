@@ -361,7 +361,7 @@ from tools import save_artifact, load_artifact, list_artifacts
 </code-mode>
 ~~~
 
-Return types come from each tool's `response_json_schema`, or an MCP tool's `outputSchema`; a tool without one returns `Any`. Objects become `TypedDict` classes named after their `$defs` key or `title`, else the property holding them. Identical shapes share one class across a module, defined once at the top of its catalog section; each stub file carries the classes its tool uses. An MCP tool with an `outputSchema` returns its `structuredContent` to the code, so the result matches that type. A tool with exactly one required parameter takes it positionally (`load_artifact("report.csv", version=2)`); every other parameter is keyword-only.
+Return types come from each tool's `response_json_schema`, or an MCP tool's `outputSchema`; a tool without one returns `Any`. Objects become `TypedDict` classes named after their `$defs` key or `title`, else the property holding them. Identical shapes share one class across a module, defined once at the top of its catalog section; a name clash with another module's class falls back to the tool's or parent's name; each stub file carries the classes its tool uses. An MCP tool with an `outputSchema` returns its `structuredContent` to the code, so the result matches that type. A tool with exactly one required parameter takes it positionally (`load_artifact("report.csv", version=2)`); every other parameter is keyword-only.
 
 Tags are indented; their content is not. The `<tools-package>` body is Python source, where leading whitespace is meaningful. Each installed-package line is `<import name>: <distribution> <version>`; namespace imports supplied by multiple distributions list every provider in deterministic order. Import names and providers are sorted so the block stays byte-stable for prompt caching. `<python-version>` and `<installed-packages>` are omitted entirely — rather than rendered blank — when the sandbox hasn't reported yet or the image has no extra packages, since an empty tag reads as "none exist".
 
@@ -372,7 +372,7 @@ With `save_tool_results_as_artifacts` enabled (the default), each non-artifact t
 A block over `max_code_mode_metadata_chars` degrades in tiers instead of vanishing. The Python version and package list survive every tier — they're small, and the model cannot discover them any other way.
 
 1. **Full** — as above.
-2. **Names only** — types, signatures and docstrings dropped, import lines kept. `<how-to-use>` gains a line telling the model to run `help(fn)` or read `/tools/<module>/<fn>.py` before calling a function it hasn't used:
+2. **Names only** — types, signatures and docstrings dropped, import lines kept. `<how-to-use>` gains a line telling the model to read a function's stub (`/tools/<module>/<fn>.py`, or `/tools/<fn>.py` for a top-level function) before calling it, to see its return type's fields:
 
    ~~~
      <tools-package>

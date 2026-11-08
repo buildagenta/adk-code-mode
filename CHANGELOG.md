@@ -1,5 +1,13 @@
 # Changelog
 
+## [2.1.0](https://github.com/buildagenta/adk-code-mode/compare/adk-code-mode-v2.0.1...adk-code-mode-v2.1.0) (2026-11-08)
+
+
+### Features
+
+* show return types in the catalog and point the names tier at stubs ([#29](https://github.com/buildagenta/adk-code-mode/issues/29)) ([a238bfd](https://github.com/buildagenta/adk-code-mode/commit/a238bfd0eecf0acf371fe879a529a85a9e1f2dba))
+* type stub return values and escape docstrings ([#28](https://github.com/buildagenta/adk-code-mode/issues/28)) ([dcb15ab](https://github.com/buildagenta/adk-code-mode/commit/dcb15abfcecc841dc06f5051f41251a1f6ab9100))
+
 ## [2.0.1](https://github.com/buildagenta/adk-code-mode/compare/adk-code-mode-v2.0.0...adk-code-mode-v2.0.1) (2026-11-02)
 
 

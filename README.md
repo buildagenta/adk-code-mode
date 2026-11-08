@@ -340,10 +340,10 @@ yaml: PyYAML 6.0.2
 from tools.slack import list_channels, send_message
 
 class ListChannelsResponse(TypedDict):
-    channels: list[ListChannelsResponseChannelsItem]
+    channels: list[ChannelsItem]
     next_cursor: NotRequired[str]
 
-class ListChannelsResponseChannelsItem(TypedDict):
+class ChannelsItem(TypedDict):
     id: str
     name: str
 
@@ -363,7 +363,7 @@ from tools import save_artifact, load_artifact, list_artifacts
 </code-mode>
 ~~~
 
-Return types come from each tool's `response_json_schema`: objects become `TypedDict` classes, defined once at the top of their module's section and in the tool's stub file, and a tool without one returns `Any`. A tool with exactly one required parameter takes it positionally (`load_artifact("report.csv", version=2)`); every other parameter is keyword-only.
+Return types come from each tool's `response_json_schema`, or an MCP tool's `outputSchema`; a tool without one returns `Any`. Objects become `TypedDict` classes named after their `$defs` key or `title`, else the property holding them. Identical shapes share one class across a module, defined once at the top of its catalog section; each stub file carries the classes its tool uses. An MCP tool with an `outputSchema` returns its `structuredContent` to the code, so the result matches that type. A tool with exactly one required parameter takes it positionally (`load_artifact("report.csv", version=2)`); every other parameter is keyword-only.
 
 Tags are indented; their content is not. The `<tools-package>` body is Python source, where leading whitespace is meaningful. Each installed-package line is `<import name>: <distribution> <version>`; namespace imports supplied by multiple distributions list every provider in deterministic order. Import names and providers are sorted so the block stays byte-stable for prompt caching. `<python-version>` and `<installed-packages>` are omitted entirely — rather than rendered blank — when the sandbox hasn't reported yet or the image has no extra packages, since an empty tag reads as "none exist".
 

@@ -16,7 +16,7 @@ from __future__ import annotations
 from typing import Literal
 
 from adk_code_mode.tools.namespacing import NamespacedTool
-from adk_code_mode.tools.stubs import RenderedTool, render_tool
+from adk_code_mode.tools.stubs import RenderedTool, render_tools
 
 Detail = Literal["full", "names"]
 
@@ -27,7 +27,7 @@ def _render_entry(rt: RenderedTool) -> str:
 
 
 def _render_module_section(module: str, tools: list[NamespacedTool], detail: Detail) -> str:
-    rendered = [render_tool(t) for t in sorted(tools, key=lambda t: t.attribute)]
+    rendered = render_tools(sorted(tools, key=lambda t: t.attribute))
     import_line = f"from {module} import {', '.join(rt.attribute for rt in rendered)}"
     # At ``names`` detail the import line, which already lists every function
     # in the module, is the whole section.
@@ -43,8 +43,8 @@ def render_catalog(namespaced: list[NamespacedTool], *, detail: Detail = "full")
 
     Namespaced sections come first in namespace-sorted order, then top-level
     tools. Tools within a section are sorted by attribute name for
-    determinism. A section defines the ``TypedDict`` return types of all its
-    tools once, ahead of their signatures.
+    determinism. A section defines its tools' ``TypedDict`` return types,
+    shared by shape, once ahead of their signatures.
 
     ``detail="names"`` drops every type, signature and docstring, leaving only
     the per-module import lines. It is the fallback when the full catalog

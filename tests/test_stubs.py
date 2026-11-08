@@ -7,8 +7,6 @@ import warnings
 from typing import Any
 from unittest.mock import MagicMock
 
-from google.adk.features import FeatureName
-from google.adk.features._feature_registry import temporary_feature_override
 from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.mcp_tool.mcp_tool import McpTool
 from google.genai import types as genai_types
@@ -520,6 +518,7 @@ _OUTPUT_SCHEMA: dict[str, object] = {
 
 
 def test_mcp_output_schema_becomes_typed_dict_return_type() -> None:
+    """Read from the MCP tool itself, so ADK's JSON-schema feature flag isn't needed."""
     tool = McpTool(
         mcp_tool=McpToolSpec(
             name="get_bookings",
@@ -529,28 +528,128 @@ def test_mcp_output_schema_becomes_typed_dict_return_type() -> None:
         ),
         mcp_session_manager=MagicMock(),
     )
-    with temporary_feature_override(FeatureName.JSON_SCHEMA_FOR_FUNC_DECL, True):
-        rt = stubs.render_tool(_build([(tool, None)])[0])
+    rt = stubs.render_tool(_build([(tool, None)])[0])
     assert rt.signature_for("catalog") == "def get_bookings() -> GetBookingsResponse:"
     assert rt.types == (
         "class GetBookingsResponse(TypedDict, total=False):\n"
-        "    bookings: list[GetBookingsResponseBookingsItem]\n"
+        "    bookings: list[BookingsItem]\n"
         "    totals: dict[str, int]\n"
         "    cursor: str | None\n"
         "    raw: Any\n"
         "    pair: tuple[str, int]",
-        "GetBookingsResponseBookingsItem = TypedDict('GetBookingsResponseBookingsItem', "
+        "BookingsItem = TypedDict('BookingsItem', "
         "{'id': 'str', 'status': \"Literal['open', 'closed']\", "
-        "'guest': 'NotRequired[GetBookingsResponseBookingsItemGuest | None]', "
+        "'guest': 'NotRequired[Guest | None]', "
         "'first-name': 'NotRequired[str | None]'})",
-        "class GetBookingsResponseBookingsItemGuest(TypedDict, total=False):\n    name: str",
+        "class Guest(TypedDict, total=False):\n    name: str",
     )
     source = stubs.render_tool_source(rt)
     assert "    from typing import NotRequired\n" in source
-    namespace = _load_stub(source)
-    assert namespace["GetBookingsResponseBookingsItem"].__name__ == (
-        "GetBookingsResponseBookingsItem"
+    assert _load_stub(source)["BookingsItem"].__name__ == "BookingsItem"
+
+
+def test_identical_shapes_share_one_class_across_a_module() -> None:
+    user = {"type": "object", "properties": {"gid": {"type": "string"}}}
+    other = {"type": "object", "properties": {"email": {"type": "string"}}}
+    task = _SchemaTool(
+        "get_task",
+        description="Task.",
+        response={"type": "object", "properties": {"assignee": user, "owner": other}},
     )
+    project = _SchemaTool(
+        "get_project",
+        description="Project.",
+        response={"type": "object", "properties": {"owner": user, "assignee": other}},
+    )
+    project_rt, task_rt = stubs.render_tools(_build([(project, None), (task, None)]))
+    assert project_rt.types == (
+        "class GetProjectResponse(TypedDict, total=False):\n"
+        "    owner: Owner\n"
+        "    assignee: Assignee",
+        "class Owner(TypedDict, total=False):\n    gid: str",
+        "class Assignee(TypedDict, total=False):\n    email: str",
+    )
+    # Same shapes, so the same classes, though the properties holding them swapped.
+    assert task_rt.types == (
+        "class GetTaskResponse(TypedDict, total=False):\n    assignee: Owner\n    owner: Assignee",
+        "class Owner(TypedDict, total=False):\n    gid: str",
+        "class Assignee(TypedDict, total=False):\n    email: str",
+    )
+
+
+def test_a_name_taken_by_another_shape_is_qualified_by_its_parent() -> None:
+    a = _SchemaTool(
+        "a",
+        description="A.",
+        response={"type": "object", "properties": {"data": {"properties": {"x": {}}}}},
+    )
+    b = _SchemaTool(
+        "b",
+        description="B.",
+        response={"type": "object", "properties": {"data": {"properties": {"y": {}}}}},
+    )
+    a_rt, b_rt = stubs.render_tools(_build([(a, None), (b, None)]))
+    assert a_rt.types[1] == "class Data(TypedDict, total=False):\n    x: Any"
+    assert b_rt.types[1] == "class BResponseData(TypedDict, total=False):\n    y: Any"
+
+
+def test_an_untitled_top_level_type_belongs_to_its_tool() -> None:
+    shape: dict[str, object] = {"type": "object", "properties": {"id": {"type": "string"}}}
+    first, second = (_SchemaTool(n, description=".", response=shape) for n in ("first", "second"))
+    first_rt, second_rt = stubs.render_tools(_build([(first, None), (second, None)]))
+    assert first_rt.return_type == "FirstResponse"
+    assert second_rt.return_type == "SecondResponse"
+    # Items of a top-level array are shared like any nested object.
+    rows = [
+        _SchemaTool(n, description=".", response={"type": "array", "items": shape})
+        for n in ("rows_a", "rows_b")
+    ]
+    a_rt, b_rt = stubs.render_tools(_build([(rows[0], None), (rows[1], None)]))
+    assert a_rt.return_type == b_rt.return_type == "list[RowsAResponseItem]"
+
+
+def test_defs_and_titles_name_classes_and_refs_may_recurse() -> None:
+    tool = _SchemaTool(
+        "get_team",
+        description="Team.",
+        response={
+            "title": "Team",
+            "type": "object",
+            "properties": {
+                "lead": {"$ref": "#/$defs/User"},
+                "members": {"type": "array", "items": {"$ref": "#/$defs/User"}},
+            },
+            "required": ["lead", "members"],
+            "$defs": {
+                "User": {
+                    "type": "object",
+                    "properties": {
+                        "name": {"type": "string"},
+                        "manager": {"anyOf": [{"$ref": "#/$defs/User"}, {"type": "null"}]},
+                    },
+                    "required": ["name"],
+                }
+            },
+        },
+    )
+    rt = stubs.render_tool(_build([(tool, None)])[0])
+    assert rt.return_type == "Team"
+    assert rt.types == (
+        "class Team(TypedDict):\n    lead: User\n    members: list[User]",
+        "class User(TypedDict):\n    name: str\n    manager: NotRequired[User | None]",
+    )
+    _load_stub(stubs.render_tool_source(rt))
+
+
+def test_class_names_avoid_stub_imports_and_tool_names() -> None:
+    tool = _SchemaTool(
+        "Any",
+        description="Clash.",
+        response={"title": "Literal", "type": "object", "properties": {"x": {}}},
+    )
+    rt = stubs.render_tool(_build([(tool, None)])[0])
+    assert rt.return_type == "AnyResponse"
+    _load_stub(stubs.render_tool_source(rt))
 
 
 def test_return_type_without_objects_or_schema() -> None:

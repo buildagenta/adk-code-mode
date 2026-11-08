@@ -109,7 +109,7 @@ def test_render_catalog_groups_tools_by_namespace_and_sorts() -> None:
     assert gmail_idx < slack_idx, "namespaces sorted alphabetically"
 
 
-def test_render_catalog_defines_module_types_before_signatures() -> None:
+def test_render_catalog_defines_shared_module_types_once_before_signatures() -> None:
     bookings = _FakeToolset("bookings")
     item = {"type": "object", "properties": {"id": {"type": "string"}}, "required": ["id"]}
     get = _SchemaTool(
@@ -124,10 +124,8 @@ def test_render_catalog_defines_module_types_before_signatures() -> None:
         "# tools.bookings\n\n"
         "from tools.bookings import get_booking, ping, search\n\n"
         "class GetBookingResponse(TypedDict, total=False):\n"
-        "    booking: GetBookingResponseBooking\n\n"
-        "class GetBookingResponseBooking(TypedDict):\n"
-        "    id: str\n\n"
-        "class SearchResponseItem(TypedDict):\n"
+        "    booking: Booking\n\n"
+        "class Booking(TypedDict):\n"
         "    id: str\n\n"
         "def get_booking() -> GetBookingResponse:\n"
         '    """Get a booking.\n    """\n'
@@ -135,7 +133,7 @@ def test_render_catalog_defines_module_types_before_signatures() -> None:
         "def ping() -> Any:\n"
         '    """Ping.\n    """\n'
         "    ...\n\n"
-        "def search() -> list[SearchResponseItem]:\n"
+        "def search() -> list[Booking]:\n"
         '    """Search.\n    """\n'
         "    ...\n"
     )

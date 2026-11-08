@@ -12,7 +12,8 @@ from pytest import MonkeyPatch
 
 from adk_code_mode import RemoteBackend
 from adk_code_mode.runtime.base import SandboxResult, SandboxSession
-from adk_code_mode.runtime.protocol import Frame
+from adk_code_mode.runtime.protocol import Frame, ToolResultFrame
+from adk_code_mode.runtime.remote import _RemoteSandboxSession
 
 
 class _NoopSession:
@@ -80,3 +81,28 @@ async def test_start_does_not_retry_non_retryable_error(monkeypatch: MonkeyPatch
         await backend.start(tools_files={}, workdir_path="/tmp", timeout_seconds=None)
 
     assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_send_refuses_a_frame_over_max_message_size() -> None:
+    class _Ws:
+        def __init__(self) -> None:
+            self.sent: list[str] = []
+
+        async def send(self, message: str) -> None:
+            self.sent.append(message)
+
+    ws = _Ws()
+    session = _RemoteSandboxSession(
+        ws=ws,
+        workdir_path="/tmp",
+        max_message_size=1_000,
+        max_upload_workspace_bytes=0,
+        max_download_workspace_bytes=0,
+    )
+
+    await session.send(ToolResultFrame(id="1", ok=True, value="small"))
+    with pytest.raises(ValueError, match="exceeds max_message_size"):
+        await session.send(ToolResultFrame(id="2", ok=True, value="x" * 2_000))
+
+    assert len(ws.sent) == 1

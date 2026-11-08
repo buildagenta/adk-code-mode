@@ -16,11 +16,11 @@ from typing import Any
 import pytest
 
 from adk_code_mode import metadata
+from adk_code_mode._json import json_safe
 from adk_code_mode.tool import (
     ProtocolVersionMismatchError,
     _handle_tool_call,
     _host_loop,
-    _json_safe,
 )
 from adk_code_mode.runtime.base import SandboxResult
 from adk_code_mode.runtime.protocol import (
@@ -112,7 +112,7 @@ def test_json_safe_handles_common_non_json_leaf_types() -> None:
         price: Decimal
         path: Path
 
-    value = _json_safe(
+    value = json_safe(
         _Payload(
             blob=b"\x00\x01",
             day=date(2026, 4, 28),

@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from adk_code_mode.mcp_results import output_schema
+from adk_code_mode.tool_result_artifacts import ToolResultArtifactTool
 from adk_code_mode.tools.namespacing import NamespacedTool, PythonNameCollisionError
 
 _PRIMITIVES = {
@@ -568,6 +569,28 @@ def _typed_dict_source(name: str, fields: _Fields, optional: bool) -> str:
     return f"{name} = TypedDict({name!r}, {{{items}}}{total})"
 
 
+def _referenced_defs(schema: Any, defs: dict[str, Any]) -> dict[str, Any]:
+    """The ``defs`` entries ``schema`` refers to, transitively."""
+    found: dict[str, Any] = {}
+
+    def visit(node: Any) -> None:
+        if isinstance(node, list):
+            for item in node:
+                visit(item)
+        elif isinstance(node, dict):
+            ref = node.get("$ref")
+            if isinstance(ref, str) and ref.startswith(_REF_PREFIXES):
+                name = ref.split("/")[-1]
+                if name in defs and name not in found:
+                    found[name] = defs[name]
+                    visit(defs[name])
+            for value in node.values():
+                visit(value)
+
+    visit(schema)
+    return found
+
+
 class _ModuleTypes:
     """The ``TypedDict`` return types of one module's tools, shared by shape.
 
@@ -643,12 +666,15 @@ class _ModuleTypes:
             parts = [self._object(schema, names, defs, depth, share=share)]
         elif ty == "object" and isinstance(extra, dict) and extra:
             parts = [f"dict[str, {child(extra, f'{short}Value')}]"]
-        elif (
-            ty == "array"
-            and isinstance(schema.get("items"), dict)
-            and not schema.get("prefixItems")
-        ):
-            parts = [f"list[{child(schema['items'], f'{short}Item')}]"]
+        elif ty == "array" and (isinstance(schema.get("items"), dict) or schema.get("prefixItems")):
+            # JSON arrays reach code as lists, so `prefixItems` slots join the item union.
+            items = schema.get("items")
+            slots = [
+                *(schema.get("prefixItems") or []),
+                *([items] if isinstance(items, dict) else []),
+            ]
+            elements = list(dict.fromkeys(child(slot, f"{short}Item") for slot in slots))
+            parts = [f"list[{'Any' if 'Any' in elements else ' | '.join(elements)}]"]
         else:
             return _schema_to_type(schema)
         unique = list(dict.fromkeys(parts))
@@ -706,7 +732,8 @@ class _ModuleTypes:
             return self.type_of(
                 target, short=_pascal(name), parent=parent, defs=defs, depth=depth + 1
             )
-        shape = "$ref " + json.dumps(target, sort_keys=True, default=str)
+        key = [target, _referenced_defs(target, defs)]
+        shape = "$ref " + json.dumps(key, sort_keys=True, default=str)
         if shape not in self._by_shape:
             cls = self._by_shape[shape] = self._claim([_pascal(name), parent + _pascal(name)])
             fields, optional = self._fields(target, parent=cls, defs=defs, depth=depth)
@@ -890,7 +917,9 @@ def _render_tool(nt: NamespacedTool, types: _ModuleTypes) -> RenderedTool:
         description = nt.resolved.tool.description
     docstring = _format_docstring(description=description, param_docs=param_docs)
 
-    response = output_schema(nt.resolved.tool) or getattr(declaration, "response_json_schema", None)
+    tool = nt.resolved.tool
+    inner = tool._wrapped if isinstance(tool, ToolResultArtifactTool) else tool
+    response = output_schema(inner) or getattr(declaration, "response_json_schema", None)
     return_type = "Any"
     if isinstance(response, dict) and response:
         defs = {**(response.get("definitions") or {}), **(response.get("$defs") or {})}

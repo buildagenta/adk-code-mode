@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from dataclasses import dataclass, field
 from typing import Any
 from unittest.mock import MagicMock
@@ -342,20 +343,6 @@ async def test_rest_http_error_raises_through_the_artifact_wrapper(
     assert result.status_code == 404
 
 
-async def test_large_rest_http_error_raises_through_the_artifact_wrapper(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    tool = ToolResultArtifactTool(
-        await rest_tool(monkeypatch, 400, VALIDATION_ERROR), large_result_threshold=1
-    )
-    d = Dispatcher(invocation_context=_make_ctx(), registry=_registry(tool), execution_id="e1")  # type: ignore[arg-type]
-    result = await d.dispatch(tool.name, {"name": "Weekend dinner"})
-    assert result.ok is False
-    assert result.error_type == "HTTPStatusError"
-    assert result.status_code == 400
-    assert result.body == VALIDATION_ERROR
-
-
 async def test_rest_success_is_returned(monkeypatch: pytest.MonkeyPatch) -> None:
     tool = await rest_tool(monkeypatch, 201, {"id": "rule-1"})
     d = Dispatcher(invocation_context=_make_ctx(), registry=_registry(tool), execution_id="e1")  # type: ignore[arg-type]
@@ -401,10 +388,9 @@ async def test_mcp_error_result_raises() -> None:
     assert result.error_message == "Tool `lookup` failed: Venue not found"
 
 
-async def test_large_mcp_error_raises_through_the_artifact_wrapper() -> None:
+async def test_mcp_error_raises_through_the_artifact_wrapper() -> None:
     tool = ToolResultArtifactTool(
-        _ResultTool({"content": [{"type": "text", "text": "Venue not found"}], "isError": True}),
-        large_result_threshold=1,
+        _ResultTool({"content": [{"type": "text", "text": "Venue not found"}], "isError": True})
     )
     d = Dispatcher(invocation_context=_make_ctx(), registry=_registry(tool), execution_id="e1")  # type: ignore[arg-type]
     result = await d.dispatch("lookup", {})
@@ -447,15 +433,20 @@ async def test_mcp_tool_with_output_schema_returns_structured_content() -> None:
         seen.append(tool_response)
         return None
 
-    tool = ToolResultArtifactTool(
-        _FakeMcpTool(_MCP_RESULT, output_schema={"type": "object"}), large_result_threshold=10**6
-    )
+    tool = ToolResultArtifactTool(_FakeMcpTool(_MCP_RESULT, output_schema={"type": "object"}))
     ctx = _make_ctx(_FakeAgent(canonical_after_tool_callbacks=[after]))
     d = Dispatcher(invocation_context=ctx, registry=_registry(tool), execution_id="e1")  # type: ignore[arg-type]
     result = await d.dispatch("lookup", {})
     assert result.ok is True
     assert result.value == {"id": "b1"}
     assert seen == [_MCP_RESULT]  # Callbacks still see ADK's result.
+    # The artifact holds what code got, so reloading it gives the same value.
+    [key] = await ctx.artifact_service.list_artifact_keys(app_name="a", user_id="u", session_id="s")
+    saved = await ctx.artifact_service.load_artifact(
+        app_name="a", user_id="u", session_id="s", filename=key
+    )
+    assert saved is not None and saved.inline_data is not None
+    assert json.loads(saved.inline_data.data or b"") == {"id": "b1"}
 
 
 async def test_mcp_tool_without_output_schema_returns_the_whole_result() -> None:

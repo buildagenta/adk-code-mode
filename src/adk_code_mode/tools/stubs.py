@@ -7,8 +7,8 @@ Each stub is a real ``.py`` file the sandbox writes into ``/tools/``. The
 function body is a single delegation into the host via the RPC client, so the
 generated file is small and robust. Parameter types come from the tool's
 JSON Schema (``BaseTool._get_declaration().parameters_json_schema``); the return
-type comes from ``response_json_schema``, with nested objects rendered as
-``TypedDict`` classes defined in the same module.
+type comes from ``response_json_schema`` (an MCP tool's ``outputSchema``), with
+objects rendered as ``TypedDict`` classes shared by the tools of one module.
 
 ``render_tool`` returns a structured ``RenderedTool``; ``render_tool_source``
 turns one into the on-disk ``.py`` stub. The catalog renderer (in
@@ -18,12 +18,15 @@ the ``.pyi``-style block injected into the model's system prompt.
 
 from __future__ import annotations
 
+import itertools
+import json
 import keyword
 import re
 import textwrap
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from adk_code_mode.mcp_results import output_schema
 from adk_code_mode.tools.namespacing import NamespacedTool, PythonNameCollisionError
 
 _PRIMITIVES = {
@@ -535,74 +538,160 @@ def _format_docstring(
     return f'"""{body}\n    """'
 
 
+# Names a generated class must not take: the stub's own imports.
+_TYPING_NAMES = frozenset({"Any", "Literal", "NotRequired", "TYPE_CHECKING", "TypedDict"})
+
+_REF_PREFIXES = ("#/$defs/", "#/definitions/")
+
+_Fields = tuple[tuple[str, str], ...]
+
+
 def _pascal(raw: str) -> str:
     """``first_name`` / ``firstName`` / ``first-name`` -> ``FirstName``."""
     return "".join(part[:1].upper() + part[1:] for part in re.split(r"[^0-9a-zA-Z]+", raw))
 
 
-def _return_type(schema: Any, *, name: str, defs: dict[str, str], depth: int = 0) -> str:
-    """Convert a response schema to a type expression, adding ``TypedDict``s to ``defs``.
-
-    Objects with declared properties become ``TypedDict`` classes named after
-    their path (``name``); everything else defers to ``_schema_to_type``.
-    ``defs`` maps class name to source, in the order the classes are first met.
-    """
-    schema = _effective_schema(schema)
-    if depth >= _MAX_SCHEMA_DEPTH:
-        return "Any"
-    ty = schema.get("type")
-    variants = schema.get("anyOf") or schema.get("oneOf")
+def _is_object(schema: dict[str, Any]) -> bool:
     properties = schema.get("properties")
-    extra = schema.get("additionalProperties")
-    if "enum" in schema:
-        return _schema_to_type(schema)
-    if isinstance(variants, list) and variants:
-        parts = [_return_type(v, name=name, defs=defs, depth=depth + 1) for v in variants]
-    elif isinstance(ty, list):
-        rest = {k: v for k, v in schema.items() if k not in ("type", "nullable")}
-        parts = [_return_type({**rest, "type": t}, name=name, defs=defs, depth=depth) for t in ty]
-    elif ty in ("object", None) and isinstance(properties, dict) and properties:
-        parts = [_typed_dict(schema, name=name, defs=defs, depth=depth)]
-    elif ty == "object" and isinstance(extra, dict) and extra:
-        value = _return_type(extra, name=f"{name}Value", defs=defs, depth=depth + 1)
-        parts = [f"dict[str, {value}]"]
-    elif ty == "array" and isinstance(schema.get("items"), dict) and not schema.get("prefixItems"):
-        item = _return_type(schema["items"], name=f"{name}Item", defs=defs, depth=depth + 1)
-        parts = [f"list[{item}]"]
-    else:
-        return _schema_to_type(schema)
-    unique = list(dict.fromkeys(parts))
-    if "Any" in unique:
-        return "Any"
-    if schema.get("nullable") and "None" not in unique:
-        unique.append("None")
-    return " | ".join(unique)
+    return (
+        schema.get("type") in ("object", None) and isinstance(properties, dict) and bool(properties)
+    )
 
 
-def _typed_dict(schema: dict[str, Any], *, name: str, defs: dict[str, str], depth: int) -> str:
-    """Add a ``TypedDict`` for an object schema to ``defs`` and return its name.
-
-    Keys that aren't identifiers force the functional syntax. When the schema
-    lists no ``required`` keys every key is optional (``total=False``);
-    otherwise only the unlisted ones are wrapped in ``NotRequired``.
-    """
-    unique, n = name, 2
-    while unique in defs:
-        unique, n = f"{name}{n}", n + 1
-    defs[unique] = ""  # Reserve the name; parents precede their children.
-    required = {key for key in schema.get("required") or [] if isinstance(key, str)}
-    fields: list[tuple[str, str]] = []
-    for key, raw in schema["properties"].items():
-        ty = _return_type(raw, name=unique + _pascal(key), defs=defs, depth=depth + 1)
-        fields.append((key, f"NotRequired[{ty}]" if required and key not in required else ty))
-    total = "" if required else ", total=False"
+def _typed_dict_source(name: str, fields: _Fields, optional: bool) -> str:
+    """Class syntax, or the functional syntax when a key isn't an identifier."""
+    total = ", total=False" if optional else ""
     if all(key.isidentifier() and not keyword.iskeyword(key) for key, _ in fields):
         body = "".join(f"\n    {key}: {ty}" for key, ty in fields)
-        defs[unique] = f"class {unique}(TypedDict{total}):{body}"
-    else:
-        items = ", ".join(f"{key!r}: {ty!r}" for key, ty in fields)
-        defs[unique] = f"{unique} = TypedDict({unique!r}, {{{items}}}{total})"
-    return unique
+        return f"class {name}(TypedDict{total}):{body}"
+    items = ", ".join(f"{key!r}: {ty!r}" for key, ty in fields)
+    return f"{name} = TypedDict({name!r}, {{{items}}}{total})"
+
+
+class _ModuleTypes:
+    """The ``TypedDict`` return types of one module's tools, shared by shape.
+
+    Identical shapes get one class, so the catalog defines a shape that many
+    tools return once. A class is named after its schema (a ``$defs`` key or
+    ``title``), else the property holding it; when a different shape already
+    has that name, the parent's name is prefixed, then a number appended.
+    """
+
+    def __init__(self, reserved: set[str]) -> None:
+        self.sources: dict[str, str] = {}
+        self._by_shape: dict[str, str] = {}
+        self._reserved = _TYPING_NAMES | reserved
+
+    def uses(self, type_expr: str) -> tuple[str, ...]:
+        """Sources of the classes ``type_expr`` refers to, transitively, parents first."""
+        names: dict[str, None] = {}
+
+        def visit(text: str) -> None:
+            for word in re.findall(r"\w+", text):
+                if word in self.sources and word not in names:
+                    names[word] = None
+                    visit(self.sources[word])
+
+        visit(type_expr)
+        return tuple(self.sources[name] for name in names)
+
+    def type_of(
+        self, schema: Any, *, short: str, parent: str, defs: dict[str, Any], depth: int = 0
+    ) -> str:
+        """Convert a response schema to a type expression, defining its classes.
+
+        ``short`` names an object found here; ``parent`` is the enclosing
+        class's preferred name, used to qualify ``short`` on a clash.
+        """
+        schema = _effective_schema(schema)
+        if depth >= _MAX_SCHEMA_DEPTH:
+            return "Any"
+        ty = schema.get("type")
+        ref = schema.get("$ref")
+        variants = schema.get("anyOf") or schema.get("oneOf")
+        extra = schema.get("additionalProperties")
+        title = schema.get("title")
+
+        def child(sub: Any, short: str) -> str:
+            return self.type_of(sub, short=short, parent=parent, defs=defs, depth=depth + 1)
+
+        if isinstance(ref, str) and ref.startswith(_REF_PREFIXES) and ref.split("/")[-1] in defs:
+            name = ref.split("/")[-1]
+            parts = [self._ref(name, defs[name], parent=parent, defs=defs, depth=depth)]
+        elif "enum" in schema:
+            return _schema_to_type(schema)
+        elif isinstance(variants, list) and variants:
+            parts = [child(v, short) for v in variants]
+        elif isinstance(ty, list):
+            rest = {k: v for k, v in schema.items() if k not in ("type", "nullable")}
+            parts = [child({**rest, "type": t}, short) for t in ty]
+        elif _is_object(schema):
+            candidates = [_pascal(title)] if isinstance(title, str) and title else []
+            parts = [self._object(schema, [*candidates, short, parent + short], defs, depth)]
+        elif ty == "object" and isinstance(extra, dict) and extra:
+            parts = [f"dict[str, {child(extra, f'{short}Value')}]"]
+        elif (
+            ty == "array"
+            and isinstance(schema.get("items"), dict)
+            and not schema.get("prefixItems")
+        ):
+            parts = [f"list[{child(schema['items'], f'{short}Item')}]"]
+        else:
+            return _schema_to_type(schema)
+        unique = list(dict.fromkeys(parts))
+        if "Any" in unique:
+            return "Any"
+        if schema.get("nullable") and "None" not in unique:
+            unique.append("None")
+        return " | ".join(unique)
+
+    def _claim(self, shape: str, candidates: list[str]) -> str:
+        valid = [
+            name
+            for name in candidates
+            if name.isidentifier() and not keyword.iskeyword(name) and name not in self._reserved
+        ] or ["Type"]
+        numbered = (f"{valid[0]}{n}" for n in itertools.count(2))
+        name = next(name for name in itertools.chain(valid, numbered) if name not in self.sources)
+        self.sources[name] = ""  # Taken; the source follows once the fields are rendered.
+        self._by_shape[shape] = name
+        return name
+
+    def _fields(
+        self, schema: dict[str, Any], *, parent: str, defs: dict[str, Any], depth: int
+    ) -> tuple[_Fields, bool]:
+        """Each property's type, and whether every key is optional (none required)."""
+        required = {key for key in schema.get("required") or [] if isinstance(key, str)}
+        fields = []
+        for key, raw in schema["properties"].items():
+            ty = self.type_of(raw, short=_pascal(key), parent=parent, defs=defs, depth=depth + 1)
+            fields.append((key, f"NotRequired[{ty}]" if required and key not in required else ty))
+        return tuple(fields), not required
+
+    def _object(
+        self, schema: dict[str, Any], candidates: list[str], defs: dict[str, Any], depth: int
+    ) -> str:
+        fields, optional = self._fields(schema, parent=candidates[0], defs=defs, depth=depth)
+        shape = repr((fields, optional))
+        if shape not in self._by_shape:
+            name = self._claim(shape, candidates)
+            self.sources[name] = _typed_dict_source(name, fields, optional)
+        return self._by_shape[shape]
+
+    def _ref(self, name: str, target: Any, *, parent: str, defs: dict[str, Any], depth: int) -> str:
+        """A ``$defs`` entry, named after its key. Claimed before its fields, so it may recurse."""
+        target = _effective_schema(target)
+        if not _is_object(target):
+            return self.type_of(
+                target, short=_pascal(name), parent=parent, defs=defs, depth=depth + 1
+            )
+        shape = "$ref " + json.dumps(target, sort_keys=True, default=str)
+        if shape not in self._by_shape:
+            cls = self._claim(shape, [_pascal(name), parent + _pascal(name)])
+            fields, optional = self._fields(target, parent=cls, defs=defs, depth=depth)
+            self.sources[cls] = _typed_dict_source(cls, fields, optional)
+            self._by_shape.setdefault(repr((fields, optional)), cls)
+        return self._by_shape[shape]
 
 
 def _sanitise_param(raw: str) -> str:
@@ -656,7 +745,7 @@ class RenderedTool:
     params: tuple[RenderedParam, ...]
     return_type: str
     types: tuple[str, ...]
-    """Source of each ``TypedDict`` the return type refers to, parents first."""
+    """Source of each ``TypedDict`` the return type uses, transitively, parents first."""
 
     def signature_for(self, target: Target) -> str:
         """Return the ``def name(...) -> T:`` line for the requested target."""
@@ -710,12 +799,31 @@ class StubFile:
     source: str
 
 
-def render_tool(nt: NamespacedTool) -> RenderedTool:
-    """Build a ``RenderedTool`` for a normalised tool.
+def render_tools(tools: list[NamespacedTool]) -> list[RenderedTool]:
+    """Build a ``RenderedTool`` for each tool, in order.
 
     Captures everything stub and catalog rendering need: signature parts,
-    formatted docstring, dotted path, namespace.
+    return type and its ``TypedDict``s, formatted docstring, dotted path,
+    namespace. Tools of one module share their ``TypedDict``s; names are
+    claimed in attribute order, so stubs and the catalog agree on them.
     """
+    modules = {
+        ns: _ModuleTypes({t.attribute for t in tools if t.namespace == ns})
+        for ns in {t.namespace for t in tools}
+    }
+    rendered = {
+        id(nt): _render_tool(nt, modules[nt.namespace])
+        for nt in sorted(tools, key=lambda t: t.attribute)
+    }
+    return [rendered[id(nt)] for nt in tools]
+
+
+def render_tool(nt: NamespacedTool) -> RenderedTool:
+    """Build a ``RenderedTool`` for a single tool; see ``render_tools``."""
+    return render_tools([nt])[0]
+
+
+def _render_tool(nt: NamespacedTool, types: _ModuleTypes) -> RenderedTool:
     declaration = nt.resolved.tool._get_declaration()
     schema: dict[str, Any] = _schema_dict_from_declaration(declaration)
 
@@ -761,10 +869,12 @@ def render_tool(nt: NamespacedTool) -> RenderedTool:
         description = nt.resolved.tool.description
     docstring = _format_docstring(description=description, param_docs=param_docs)
 
-    defs: dict[str, str] = {}
-    response = getattr(declaration, "response_json_schema", None)
-    root = _pascal(nt.attribute) + "Response"
-    return_type = _return_type(response, name=root, defs=defs) if response else "Any"
+    response = output_schema(nt.resolved.tool) or getattr(declaration, "response_json_schema", None)
+    return_type = "Any"
+    if isinstance(response, dict) and response:
+        defs = {**(response.get("definitions") or {}), **(response.get("$defs") or {})}
+        short = _pascal(nt.attribute) + "Response"
+        return_type = types.type_of(response, short=short, parent="", defs=defs)
 
     return RenderedTool(
         attribute=nt.attribute,
@@ -773,7 +883,7 @@ def render_tool(nt: NamespacedTool) -> RenderedTool:
         docstring=docstring,
         params=tuple(params),
         return_type=return_type,
-        types=tuple(defs.values()),
+        types=types.uses(return_type),
     )
 
 
@@ -878,10 +988,8 @@ def render_tree(namespaced: list[NamespacedTool]) -> list[StubFile]:
     for nt in per_tool:
         grouped.setdefault(nt.namespace, []).append(nt)
 
-    for nt in per_tool:
-        ns = nt.namespace
-        sub = "" if ns is None else f"{ns}/"
-        rendered = render_tool(nt)
+    for nt, rendered in zip(per_tool, render_tools(per_tool)):
+        sub = "" if nt.namespace is None else f"{nt.namespace}/"
         files.append(StubFile(path=f"{sub}{nt.attribute}.py", source=render_tool_source(rendered)))
 
     for ns, tools in grouped.items():
@@ -907,5 +1015,6 @@ __all__ = [
     "render_root_init",
     "render_tool",
     "render_tool_source",
+    "render_tools",
     "render_tree",
 ]

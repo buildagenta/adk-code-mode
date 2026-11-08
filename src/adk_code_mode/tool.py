@@ -138,9 +138,9 @@ _DESCRIPTION_SUFFIX = (
     "returned. Variables and the working directory persist across calls within the "
     "same turn and reset on the next turn — use `save_artifact` / `load_artifact` "
     "(imported the same way) to persist across turns. Files created or changed by "
-    "the code are saved as artifacts automatically. A tool call whose API answers "
-    "with an HTTP error raises `HTTPStatusError` (with `status_code` and `body`), and "
-    "one that fails for any other reason raises `ToolError`; import both from `tools`."
+    "the code are saved as artifacts automatically. Tool calls that call APIs raise "
+    "HTTP errors as `HTTPStatusError` (with `status_code` and `body`); other failures "
+    "raise `ToolError`. Import both from `tools`."
 )
 
 

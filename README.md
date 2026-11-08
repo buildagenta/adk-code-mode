@@ -309,11 +309,13 @@ Two surfaces, deliberately kept apart. The **tool description** is the invariant
 Execute Python code in a sandboxed container. Custom tools are Python functions to
 import from the `tools` package (e.g. `from tools.slack import send_message`). See
 the `<code-mode>` section of the system instruction for the Python version,
-preinstalled packages, and available functions. Print anything you want to see; only
-stdout/stderr are returned. Variables and the working directory persist across calls
-within the same turn and reset on the next turn — use `save_artifact` /
-`load_artifact` (imported the same way) to persist across turns. Files created or
-changed by the code are saved as artifacts automatically
+preinstalled packages, and available functions. Print function calls, variables, etc.
+to see output, only stdout/stderr are returned. Variables and the working directory
+persist across calls within the same turn and reset on the next turn — use
+`save_artifact` / `load_artifact` (imported the same way) to persist across turns.
+Files created or changed by the code are saved as artifacts automatically. Tool calls
+that call APIs raise HTTP errors as `HTTPStatusError` (with `status_code` and
+`body`); other failures raise `ToolError`. Import both from `tools`.
 ~~~
 
 With `append_code_mode_metadata_to_system_instruction` disabled that middle sentence is replaced by the discovery text the pointer tier uses (see [Fitting the budget](#fitting-the-budget)), so the description never points at a section that wasn't appended.

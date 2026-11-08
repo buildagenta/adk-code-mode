@@ -14,7 +14,7 @@ Inspired by Cloudflare's [Code Mode](https://blog.cloudflare.com/code-mode/) and
 - **Call ADK tools from sandbox code** — imports against the `tools` package proxy back to the host and run through ADK's `before_tool` / `after_tool` / `on_error` callbacks and the plugin manager exactly as direct tool calls would.
 - **Failed tool calls raise** — a REST tool whose API answers with an HTTP error raises `HTTPStatusError` (with `status_code` and `body`), and any other failure, including an MCP tool that reports one, raises `ToolError`. ADK returns these as values for a model to read, but sandbox code reads return values, so it would otherwise carry on as if the call had worked.
 - **Bake any Python package into the image** — extend the published base image with anything the model's code needs to `import`, no runtime `pip install` required. The sandbox reports what it has installed, so the model is told about it automatically.
-- **Cross-turn persistence via ADK Artifacts** — `save_artifact` / `load_artifact` / `list_artifacts` are auto-injected and route through your configured `ArtifactService`. Files the code creates or changes are saved as artifacts automatically too.
+- **Cross-turn persistence via ADK Artifacts** — files the code creates or changes are saved as artifacts automatically, and `save_artifact` / `load_artifact` / `list_artifacts` are auto-injected and route through your configured `ArtifactService`.
 - **Tool results saved as artifacts** — on by default; every tool's result is persisted as a `code_mode.tool_result` artifact (with optional model-supplied name/description) so hosts can forward outputs and large results stay out of the prompt. Opt out with `save_tool_results_as_artifacts=False`.
 - **Bounded stdout/stderr** — overflow lands in a session artifact instead of poisoning the prompt.
 - **Production-ready remote sandbox** — `RemoteBackend` connects to an isolated per-turn container over WebSocket, reused across the turn's `execute_code` calls. Deploy on any cloud platform (Cloud Run, Fargate, ACI, Kubernetes, Fly.io, etc.).
@@ -310,15 +310,16 @@ Execute Python code in a sandboxed container. Custom tools are Python functions 
 import from the `tools` package (e.g. `from tools.slack import send_message`). See
 the `<code-mode>` section of the system instruction for the Python version,
 preinstalled packages, and available functions. Print function calls, variables, etc.
-to see output, only stdout/stderr are returned. Variables and the working directory
-persist across calls within the same turn and reset on the next turn — use
-`save_artifact` / `load_artifact` (imported the same way) to persist across turns.
-Files created or changed by the code are saved as artifacts automatically. Tool calls
-that call APIs raise HTTP errors as `HTTPStatusError` (with `status_code` and
-`body`); other failures raise `ToolError`. Import both from `tools`.
+to see output, only stdout/stderr are returned. Variables and files persist across
+calls within the same turn and reset on the next turn. Every file the code writes in
+the working directory, and every tool's result, is saved as an artifact; use
+`load_artifact` (imported the same way) to read one in a later turn. Tool calls that
+call APIs raise HTTP errors as `HTTPStatusError` (with `status_code` and `body`);
+other failures raise `ToolError`. Import both from `tools`. Each call can run for up
+to 60s.
 ~~~
 
-With `append_code_mode_metadata_to_system_instruction` disabled that middle sentence is replaced by the discovery text the pointer tier uses (see [Fitting the budget](#fitting-the-budget)), so the description never points at a section that wasn't appended.
+With `append_code_mode_metadata_to_system_instruction` disabled that middle sentence is replaced by the discovery text the pointer tier uses (see [Fitting the budget](#fitting-the-budget)), so the description never points at a section that wasn't appended. With `save_tool_results_as_artifacts=False` the artifact sentence drops "and every tool's result", and with `include_artifact_tools=False` it drops the `load_artifact` clause. The last sentence follows `timeout_seconds` and is left out when it's `None`.
 
 The **`<code-mode>` block** is the per-deployment inventory of the sandbox, appended to the system instruction on every model turn:
 
@@ -437,7 +438,7 @@ Named "Unsafe" intentionally: it binds a TCP listener on `0.0.0.0`, communicates
 ## ⚠️ Limitations
 
 - **No credential-requesting tools.** Tools that need ADK to request credentials, confirmations, UI widgets, agent transfer, escalation, or that yield without an immediate response are rejected with a structured error.
-- **State is turn-scoped.** Variables and the working directory persist across `execute_code` calls **within** a turn, but reset between turns. Use `save_artifact` / `load_artifact` to persist across turns.
+- **State is turn-scoped.** Variables and the working directory persist across `execute_code` calls **within** a turn, but reset between turns. Files the code writes and tool results are saved as artifacts; use `load_artifact` to read them in a later turn.
 - **No runtime package installation.** The sandbox ships with the Python Standard Library and the runtime's own dependencies only. Extra packages must be baked into the image at build time.
 
 ## 🛠️ Development

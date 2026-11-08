@@ -133,22 +133,38 @@ _DESCRIPTION_WITH_METADATA = (
     "version, preinstalled packages, and available functions."
 )
 
-_DESCRIPTION_SUFFIX = (
+_DESCRIPTION_OUTPUT = (
     " Print function calls, variables, etc. to see output, only stdout/stderr are "
-    "returned. Variables and the working directory persist across calls within the "
-    "same turn and reset on the next turn — use `save_artifact` / `load_artifact` "
-    "(imported the same way) to persist across turns. Files created or changed by "
-    "the code are saved as artifacts automatically. Tool calls that call APIs raise "
-    "HTTP errors as `HTTPStatusError` (with `status_code` and `body`); other failures "
-    "raise `ToolError`. Import both from `tools`."
+    "returned. Variables and files persist across calls within the same turn and "
+    "reset on the next turn."
+)
+
+_DESCRIPTION_ERRORS = (
+    " Tool calls that call APIs raise HTTP errors as `HTTPStatusError` (with "
+    "`status_code` and `body`); other failures raise `ToolError`. Import both from "
+    "`tools`."
 )
 
 
-def _build_description(*, append_metadata: bool, timeout_seconds: int | None) -> str:
+def _build_description(
+    *,
+    append_metadata: bool,
+    artifact_tools: bool,
+    tool_results: bool,
+    timeout_seconds: int | None,
+) -> str:
     """Build the tool description for this tool's configured surface."""
     pointer = _DESCRIPTION_WITH_METADATA if append_metadata else metadata.DISCOVER_TOOLS
+    saved = "Every file the code writes in the working directory"
+    if tool_results:
+        saved += ", and every tool's result,"
+    saved = f" {saved} is saved as an artifact"
+    if artifact_tools:
+        saved += "; use `load_artifact` (imported the same way) to read one in a later turn"
     limit = f" Each call can run for up to {timeout_seconds}s." if timeout_seconds else ""
-    return f"{_DESCRIPTION_PREFIX}{pointer}{_DESCRIPTION_SUFFIX}{limit}"
+    return (
+        f"{_DESCRIPTION_PREFIX}{pointer}{_DESCRIPTION_OUTPUT}{saved}.{_DESCRIPTION_ERRORS}{limit}"
+    )
 
 
 ArtifactsSavedCallback = Callable[[InvocationContext, dict[str, int]], Awaitable[None]]
@@ -226,11 +242,13 @@ class ExecuteCodeTool(BaseTool):
             ``UnsafeLocalDockerBackend`` for local development).
           include_artifact_tools: If true (default), ``save_artifact`` /
             ``load_artifact`` / ``list_artifacts`` are injected as top-level
-            tools. Set ``False`` for a strict tool surface.
+            tools, and the tool description points the model at
+            ``load_artifact``. Set ``False`` for a strict tool surface.
           save_tool_results_as_artifacts: If true (default), every non-artifact
             tool is wrapped so its result is also saved as a session artifact,
             reloadable in later turns via ``load_artifact``. The code always
-            gets the full result. Set ``False`` to skip saving.
+            gets the full result, and the tool description says results are
+            saved. Set ``False`` to skip saving.
           append_code_mode_metadata_to_system_instruction: If true (default),
             every model turn's system instruction gets a ``<code-mode>`` block
             describing the sandbox: its Python version, its preinstalled
@@ -274,6 +292,8 @@ class ExecuteCodeTool(BaseTool):
             name="execute_code",
             description=_build_description(
                 append_metadata=append_code_mode_metadata_to_system_instruction,
+                artifact_tools=include_artifact_tools,
+                tool_results=save_tool_results_as_artifacts,
                 timeout_seconds=timeout_seconds,
             ),
         )

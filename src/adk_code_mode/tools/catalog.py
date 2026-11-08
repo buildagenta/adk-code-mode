@@ -16,7 +16,7 @@ from __future__ import annotations
 from typing import Literal
 
 from adk_code_mode.tools.namespacing import NamespacedTool
-from adk_code_mode.tools.stubs import RenderedTool, render_tool
+from adk_code_mode.tools.stubs import RenderedTool, render_tools
 
 Detail = Literal["full", "names"]
 
@@ -54,7 +54,7 @@ def render_catalog(namespaced: list[NamespacedTool], *, detail: Detail = "full")
 
     for ns in sorted(n for n in grouped if n is not None):
         tools = sorted(grouped[ns], key=lambda t: t.attribute)
-        rendered = [render_tool(t) for t in tools]
+        rendered = render_tools(tools)
         names = ", ".join(rt.attribute for rt in rendered)
         entries = [_render_entry(rt) for rt in rendered] if detail == "full" else []
         sections.append(
@@ -67,7 +67,7 @@ def render_catalog(namespaced: list[NamespacedTool], *, detail: Detail = "full")
 
     top_level = sorted(grouped.get(None, []), key=lambda t: t.attribute)
     if top_level:
-        rendered = [render_tool(t) for t in top_level]
+        rendered = render_tools(top_level)
         names = ", ".join(rt.attribute for rt in rendered)
         entries = [_render_entry(rt) for rt in rendered] if detail == "full" else []
         sections.append(

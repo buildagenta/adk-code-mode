@@ -80,7 +80,7 @@ def test_render_catalog_includes_top_level_tools_section() -> None:
     catalog = render_catalog(_build([(echo, None)]))
     assert "# tools" in catalog
     assert "from tools import echo" in catalog
-    assert "def echo(*, message: str) -> Any:" in catalog
+    assert "def echo(message: str) -> Any:" in catalog
 
 
 def test_render_catalog_keeps_a_shared_tool_name_in_both_namespaces() -> None:

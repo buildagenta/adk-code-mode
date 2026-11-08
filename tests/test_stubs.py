@@ -599,6 +599,13 @@ def test_an_untitled_top_level_type_belongs_to_its_tool() -> None:
     first_rt, second_rt = stubs.render_tools(_build([(first, None), (second, None)]))
     assert first_rt.return_type == "FirstResponse"
     assert second_rt.return_type == "SecondResponse"
+    # Items of a top-level array are shared like any nested object.
+    rows = [
+        _SchemaTool(n, description=".", response={"type": "array", "items": shape})
+        for n in ("rows_a", "rows_b")
+    ]
+    a_rt, b_rt = stubs.render_tools(_build([(rows[0], None), (rows[1], None)]))
+    assert a_rt.return_type == b_rt.return_type == "list[RowsAResponseItem]"
 
 
 def test_defs_and_titles_name_classes_and_refs_may_recurse() -> None:

@@ -597,12 +597,20 @@ class _ModuleTypes:
         return tuple(self.sources[name] for name in names)
 
     def type_of(
-        self, schema: Any, *, short: str, parent: str, defs: dict[str, Any], depth: int = 0
+        self,
+        schema: Any,
+        *,
+        short: str,
+        parent: str,
+        defs: dict[str, Any],
+        depth: int = 0,
+        own: bool = False,
     ) -> str:
         """Convert a response schema to a type expression, defining its classes.
 
         ``short`` names an object found here; ``parent`` is the enclosing
-        class's preferred name, used to qualify ``short`` on a clash.
+        class's preferred name, used to qualify ``short`` on a clash. ``own``
+        marks the tool's top level, whose untitled object isn't shared.
         """
         schema = _effective_schema(schema)
         if depth >= _MAX_SCHEMA_DEPTH:
@@ -613,8 +621,10 @@ class _ModuleTypes:
         extra = schema.get("additionalProperties")
         title = schema.get("title")
 
-        def child(sub: Any, short: str) -> str:
-            return self.type_of(sub, short=short, parent=parent, defs=defs, depth=depth + 1)
+        def child(sub: Any, short: str, own: bool = False) -> str:
+            return self.type_of(
+                sub, short=short, parent=parent, defs=defs, depth=depth + 1, own=own
+            )
 
         if isinstance(ref, str) and ref.startswith(_REF_PREFIXES) and ref.split("/")[-1] in defs:
             name = ref.split("/")[-1]
@@ -622,15 +632,15 @@ class _ModuleTypes:
         elif "enum" in schema:
             return _schema_to_type(schema)
         elif isinstance(variants, list) and variants:
-            parts = [child(v, short) for v in variants]
+            parts = [child(v, short, own) for v in variants]
         elif isinstance(ty, list):
             rest = {k: v for k, v in schema.items() if k not in ("type", "nullable")}
-            parts = [child({**rest, "type": t}, short) for t in ty]
+            parts = [child({**rest, "type": t}, short, own) for t in ty]
         elif _is_object(schema):
             candidates = [_pascal(title)] if isinstance(title, str) and title else []
             names = [*candidates, short, parent + short]
-            # Only the top level has no parent.
-            parts = [self._object(schema, names, defs, depth, share=bool(candidates or parent))]
+            share = bool(candidates) or not own
+            parts = [self._object(schema, names, defs, depth, share=share)]
         elif ty == "object" and isinstance(extra, dict) and extra:
             parts = [f"dict[str, {child(extra, f'{short}Value')}]"]
         elif (
@@ -885,7 +895,7 @@ def _render_tool(nt: NamespacedTool, types: _ModuleTypes) -> RenderedTool:
     if isinstance(response, dict) and response:
         defs = {**(response.get("definitions") or {}), **(response.get("$defs") or {})}
         short = _pascal(nt.attribute) + "Response"
-        return_type = types.type_of(response, short=short, parent="", defs=defs)
+        return_type = types.type_of(response, short=short, parent="", defs=defs, own=True)
 
     return RenderedTool(
         attribute=nt.attribute,

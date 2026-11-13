@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from typing import Any, cast
 
 import pytest
@@ -12,12 +13,16 @@ from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 
 from adk_code_mode import (
+    DEFAULT_LARGE_RESULT_THRESHOLD,
     TOOL_RESULT_DESCRIPTION_KEY,
     TOOL_RESULT_FILENAME_KEY,
     TOOL_RESULT_METADATA_KEY,
     TOOL_RESULT_NAME_KEY,
     ToolResultArtifactTool,
+    wrap_tool_result_as_artifact,
 )
+from adk_code_mode._artifact_tools import load_artifact_parsed
+from adk_code_mode._json import json_safe
 from adk_code_mode.tool import ExecuteCodeTool
 from adk_code_mode.tools import normaliser
 from tests._fake_runtime import FakeRuntime
@@ -129,6 +134,68 @@ async def test_large_result_elided_with_reload_tip() -> None:
 
 
 @pytest.mark.asyncio
+async def test_default_threshold_elides_a_result_over_50_000_bytes() -> None:
+    assert DEFAULT_LARGE_RESULT_THRESHOLD == 50_000
+    big = {"blob": "x" * 60_000}
+    ctx = cast(Any, _FakeToolContext())
+    tool = ToolResultArtifactTool(_ResultTool(big))
+    assert tool.large_result_threshold == DEFAULT_LARGE_RESULT_THRESHOLD
+    result = await tool.run_async(args={"q": "hi"}, tool_context=cast(ToolContext, ctx))
+    assert set(result) == {"tool_result_artifact", "note"}
+
+
+@pytest.mark.asyncio
+async def test_no_threshold_returns_a_large_result_in_full_and_saves_it() -> None:
+    big = {"blob": "x" * 200_000}
+    ctx = cast(Any, _FakeToolContext())
+    tool = wrap_tool_result_as_artifact(_ResultTool(big), large_result_threshold=None)
+    assert tool.large_result_threshold is None
+    result = await tool.run_async(args={"q": "hi"}, tool_context=cast(ToolContext, ctx))
+    assert result == big
+    assert json.loads(ctx.saved[0]["artifact"].inline_data.data) == big
+
+
+def _reload(ctx: Any) -> Any:
+    part: types.Part = ctx.saved[0]["artifact"]
+
+    async def _load(filename: str, *, version: int | None = None) -> types.Part:
+        return part
+
+    ctx.load_artifact = _load
+    return load_artifact_parsed(filename=ctx.saved[0]["filename"], tool_context=ctx)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [{"rows": [{"id": 1, "name": "Ada"}], "next": None}, [1, "two", 3.0], "plain text", None],
+)
+@pytest.mark.asyncio
+async def test_saved_result_reloads_parsed_as_the_original_value(value: Any) -> None:
+    ctx = cast(Any, _FakeToolContext())
+    await ToolResultArtifactTool(_ResultTool(value)).run_async(
+        args={"q": "hi"}, tool_context=cast(ToolContext, ctx)
+    )
+    assert await _reload(ctx) == value
+
+
+@dataclass
+class _Record:
+    label: str
+
+
+@pytest.mark.asyncio
+async def test_saved_result_holds_the_value_sent_to_the_code() -> None:
+    record = _Record(label="ready")
+    ctx = cast(Any, _FakeToolContext())
+    await ToolResultArtifactTool(_ResultTool(record)).run_async(
+        args={"q": "hi"}, tool_context=cast(ToolContext, ctx)
+    )
+    # Saved with the RPC reply's conversion, not ``str(record)``.
+    assert json.loads(ctx.saved[0]["artifact"].inline_data.data) == {"label": "ready"}
+    assert await _reload(ctx) == json_safe(record) == {"label": "ready"}
+
+
+@pytest.mark.asyncio
 async def test_no_artifact_service_is_passthrough() -> None:
     ctx = cast(Any, _FakeToolContext(has_artifact_service=False))
     result = await ToolResultArtifactTool(_ResultTool({"ok": True})).run_async(
@@ -146,6 +213,15 @@ def test_tool_wraps_non_artifact_tools_by_default() -> None:
     tool = ExecuteCodeTool(tools=[_ResultTool({}, name="search")], backend=FakeRuntime())
     wrapped = tool._apply_tool_result_wrapping([_resolved(_ResultTool({}, name="search"))])
     assert isinstance(wrapped[0].tool, ToolResultArtifactTool)
+    assert wrapped[0].tool.large_result_threshold == DEFAULT_LARGE_RESULT_THRESHOLD
+
+
+@pytest.mark.parametrize("threshold", [None, 10])
+def test_tool_passes_its_large_result_threshold_to_the_wrapper(threshold: int | None) -> None:
+    tool = ExecuteCodeTool(tools=[], backend=FakeRuntime(), large_result_threshold=threshold)
+    wrapped = tool._apply_tool_result_wrapping([_resolved(_ResultTool({}, name="search"))])
+    assert isinstance(wrapped[0].tool, ToolResultArtifactTool)
+    assert wrapped[0].tool.large_result_threshold == threshold
 
 
 def test_tool_skips_artifact_tools_and_avoids_double_wrap() -> None:

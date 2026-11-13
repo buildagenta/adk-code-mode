@@ -19,7 +19,8 @@ can decide whether and how to forward the result to the user.
 Small results are returned to the model unchanged. Results whose serialised form
 exceeds ``large_result_threshold`` are replaced with a short notice pointing at
 the artifact, keeping large payloads out of the model's context while remaining
-reloadable with ``load_artifact``.
+reloadable with ``load_artifact``. With ``large_result_threshold=None`` every
+result is returned unchanged and is still saved.
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 
+from adk_code_mode._json import json_safe
 from adk_code_mode.tool_failures import raise_for_failed_result
 
 # Transport-neutral metadata stamped on saved tool-result artifacts. Downstream
@@ -53,13 +55,17 @@ class ToolResultArtifactTool(BaseTool):
     Preserves the wrapped tool's declaration (the model still sees the original
     parameters) and injects two optional parameters, ``artifact_name`` and
     ``artifact_description``, for naming the saved artifact.
+
+    A result whose serialised form is over ``large_result_threshold`` bytes is
+    replaced with a ``{"tool_result_artifact", "note"}`` pointer to the saved
+    artifact. ``None`` never replaces a result.
     """
 
     def __init__(
         self,
         wrapped: BaseTool,
         *,
-        large_result_threshold: int = DEFAULT_LARGE_RESULT_THRESHOLD,
+        large_result_threshold: int | None = DEFAULT_LARGE_RESULT_THRESHOLD,
     ) -> None:
         super().__init__(
             name=wrapped.name,
@@ -72,6 +78,11 @@ class ToolResultArtifactTool(BaseTool):
         existing = _declared_param_names(wrapped)
         self._inject_name = _ARTIFACT_NAME_PARAM not in existing
         self._inject_description = _ARTIFACT_DESCRIPTION_PARAM not in existing
+
+    @property
+    def large_result_threshold(self) -> int | None:
+        """Size in bytes above which a result becomes a pointer; ``None`` for never."""
+        return self._large_result_threshold
 
     def _get_declaration(self) -> Optional[types.FunctionDeclaration]:
         base = self._wrapped._get_declaration()
@@ -134,7 +145,8 @@ class ToolResultArtifactTool(BaseTool):
         )
 
         raise_for_failed_result(self._wrapped, result)
-        if len(data) > self._large_result_threshold:
+        threshold = self._large_result_threshold
+        if threshold is not None and len(data) > threshold:
             return {
                 "tool_result_artifact": filename,
                 "note": (
@@ -147,7 +159,7 @@ class ToolResultArtifactTool(BaseTool):
 
 
 def wrap_tool_result_as_artifact(
-    tool: BaseTool, *, large_result_threshold: int = DEFAULT_LARGE_RESULT_THRESHOLD
+    tool: BaseTool, *, large_result_threshold: int | None = DEFAULT_LARGE_RESULT_THRESHOLD
 ) -> ToolResultArtifactTool:
     """Wrap ``tool`` so its results are saved as session artifacts."""
     return ToolResultArtifactTool(tool, large_result_threshold=large_result_threshold)
@@ -176,7 +188,8 @@ def _serialise_result(result: Any) -> tuple[bytes, str]:
         return bytes(result), "application/octet-stream"
     if isinstance(result, str):
         return result.encode("utf-8"), "text/plain; charset=utf-8"
-    return json.dumps(result, default=str, ensure_ascii=False).encode("utf-8"), "application/json"
+    # The same conversion as the reply to the code, so reloading gives that value.
+    return json.dumps(json_safe(result), ensure_ascii=False).encode("utf-8"), "application/json"
 
 
 __all__ = [

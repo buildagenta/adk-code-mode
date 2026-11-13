@@ -564,6 +564,17 @@ def test_wrapped_tool_return_type_includes_the_large_result_pointer() -> None:
     )
 
 
+def test_wrapped_tool_without_a_threshold_keeps_the_wrapped_return_type() -> None:
+    # With no threshold the result is never replaced, so there is no pointer to type.
+    tool = ToolResultArtifactTool(
+        _SchemaTool("count", description="Count records.", response={"type": "integer"}),
+        large_result_threshold=None,
+    )
+    rt = stubs.render_tool(_build([(tool, None)])[0])
+    assert rt.return_type == "int"
+    assert rt.types == ()
+
+
 def test_identical_shapes_share_one_class_across_a_module() -> None:
     user = {"type": "object", "properties": {"gid": {"type": "string"}}}
     other = {"type": "object", "properties": {"email": {"type": "string"}}}

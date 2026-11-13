@@ -929,7 +929,10 @@ def _render_tool(nt: NamespacedTool, types: _ModuleTypes) -> RenderedTool:
     docstring = _format_docstring(description=description, param_docs=param_docs)
 
     tool = nt.resolved.tool
-    wraps_result = isinstance(tool, ToolResultArtifactTool)
+    # Only a wrapper with a threshold can hand back the pointer instead.
+    wraps_result = (
+        isinstance(tool, ToolResultArtifactTool) and tool.large_result_threshold is not None
+    )
     inner = tool._wrapped if isinstance(tool, ToolResultArtifactTool) else tool
     response = response_schema(inner) or getattr(declaration, "response_json_schema", None)
     return_type = "Any"

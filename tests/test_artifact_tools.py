@@ -19,8 +19,10 @@ from google.genai import types as genai_types
 
 from adk_code_mode._artifact_tools import (
     ARTIFACT_TOOLS,
+    artifact_tools,
     list_artifacts,
     load_artifact,
+    load_artifact_parsed,
     save_artifact,
 )
 
@@ -190,6 +192,107 @@ async def test_load_artifact_returns_bytes_kind_for_binary_mime() -> None:
     assert base64.b64decode(result["data"]) == raw
 
 
+@pytest.mark.parametrize(
+    ("data", "mime_type", "text"),
+    [
+        # Mime parameters no longer turn JSON into ``kind="bytes"``.
+        (b"[1, 2]", "application/json; charset=utf-8", "[1, 2]"),
+        ("<a>é</a>".encode("iso-8859-1"), "application/xml; charset=iso-8859-1", "<a>é</a>"),
+        ("café".encode("iso-8859-1"), "text/plain; charset=iso-8859-1", "café"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_load_artifact_decodes_text_with_its_charset(
+    data: bytes, mime_type: str, text: str
+) -> None:
+    part = genai_types.Part(inline_data=genai_types.Blob(data=data, mime_type=mime_type))
+    ctx = _StubToolContext(load_result=part)
+    result = await load_artifact(filename="a", tool_context=ctx)  # type: ignore[arg-type]
+    assert result == {"kind": "text", "data": text, "mime_type": mime_type}
+
+
+@pytest.mark.asyncio
+async def test_save_artifact_encodes_text_with_its_charset() -> None:
+    ctx = _StubToolContext()
+    await save_artifact(
+        filename="notes.txt",
+        content="café",
+        mime_type="text/plain; charset=iso-8859-1",
+        tool_context=ctx,  # type: ignore[arg-type]
+    )
+    _, part, _ = ctx.saved[0]
+    assert part.inline_data is not None
+    assert part.inline_data.data == "café".encode("iso-8859-1")
+
+
+@pytest.mark.parametrize(
+    ("data", "mime_type", "expected"),
+    [
+        (b'{"ok": true, "rows": [1, 2]}', "application/json", {"ok": True, "rows": [1, 2]}),
+        (b"[1, 2]", "application/json; charset=utf-8", [1, 2]),
+        (b'{"a": 1}', "application/ld+json", {"a": 1}),
+        (b"not json", "application/json", "not json"),
+        (b"# Report", "text/markdown", "# Report"),
+        (b"plain", "text/plain; charset=utf-8", "plain"),
+        ("<a>é</a>".encode("iso-8859-1"), "application/xml; charset=iso-8859-1", "<a>é</a>"),
+        (b"\x00\x01\x02", "image/png", {"mime_type": "image/png", "bytes": "AAEC"}),
+    ],
+)
+@pytest.mark.asyncio
+async def test_load_artifact_parsed_returns_the_content(
+    data: bytes, mime_type: str, expected: Any
+) -> None:
+    part = genai_types.Part(inline_data=genai_types.Blob(data=data, mime_type=mime_type))
+    ctx = _StubToolContext(load_result=part)
+    result = await load_artifact_parsed(filename="a", tool_context=ctx)  # type: ignore[arg-type]
+    assert result == expected
+
+
+@pytest.mark.asyncio
+async def test_load_artifact_parsed_returns_text_part_as_str() -> None:
+    ctx = _StubToolContext(load_result=genai_types.Part(text="hello"))
+    result = await load_artifact_parsed(filename="a", tool_context=ctx)  # type: ignore[arg-type]
+    assert result == "hello"
+
+
+@pytest.mark.asyncio
+async def test_load_artifact_parsed_returns_none_when_missing() -> None:
+    ctx = _StubToolContext(load_result=None)
+    result = await load_artifact_parsed(
+        filename="missing.txt",
+        version=2,
+        tool_context=ctx,  # type: ignore[arg-type]
+    )
+    assert result is None
+    assert ctx.loaded == [("missing.txt", 2)]
+
+
+@pytest.mark.parametrize(
+    ("content", "mime_type", "expected"),
+    [
+        ('{"status": "ok", "n": [1, 2]}', "application/json", {"status": "ok", "n": [1, 2]}),
+        ("# Notes", "text/markdown", "# Notes"),
+        ("café", "text/plain; charset=iso-8859-1", "café"),
+        ("AAEC", "image/png", {"mime_type": "image/png", "bytes": "AAEC"}),
+        ("AAEC", None, {"mime_type": "application/octet-stream", "bytes": "AAEC"}),
+    ],
+)
+@pytest.mark.asyncio
+async def test_save_artifact_round_trips_through_load_artifact_parsed(
+    content: str, mime_type: str | None, expected: Any
+) -> None:
+    saver = _StubToolContext()
+    await save_artifact(
+        filename="a",
+        content=content,
+        mime_type=mime_type,
+        tool_context=saver,  # type: ignore[arg-type]
+    )
+    loader = _StubToolContext(load_result=saver.saved[0][1])
+    result = await load_artifact_parsed(filename="a", tool_context=loader)  # type: ignore[arg-type]
+    assert result == expected
+
+
 @pytest.mark.asyncio
 async def test_load_artifact_returns_none_when_missing() -> None:
     ctx = _StubToolContext(load_result=None)
@@ -222,6 +325,30 @@ async def test_list_artifacts_forwards_to_tool_context() -> None:
 def test_artifact_tools_constant_exposes_all_three() -> None:
     names = {t.name for t in ARTIFACT_TOOLS}
     assert names == {"save_artifact", "load_artifact", "list_artifacts"}
+
+
+def test_artifact_tools_default_to_the_envelope_load_artifact() -> None:
+    assert artifact_tools() is ARTIFACT_TOOLS
+    assert artifact_tools("envelope") is ARTIFACT_TOOLS
+
+
+def test_parsed_artifact_tools_swap_in_the_parsed_load_artifact() -> None:
+    parsed = artifact_tools("parsed")
+    assert [t.name for t in parsed] == [t.name for t in ARTIFACT_TOOLS]
+    by_name = {t.name: t for t in parsed}
+    assert by_name["save_artifact"] is ARTIFACT_TOOLS[0]
+    assert by_name["list_artifacts"] is ARTIFACT_TOOLS[2]
+    load = by_name["load_artifact"]
+    assert load.func is load_artifact_parsed
+    declaration = load._get_declaration()
+    assert declaration is not None and declaration.name == "load_artifact"
+    assert '{"mime_type": <str>, "bytes": <base64 str>}' in (declaration.description or "")
+    assert '"kind"' not in (declaration.description or "")
+
+
+def test_artifact_tools_reject_an_unknown_format() -> None:
+    with pytest.raises(ValueError, match="'envelope' or 'parsed'"):
+        artifact_tools("raw")  # type: ignore[arg-type]
 
 
 def test_artifact_tools_declarations_omit_tool_context_param() -> None:

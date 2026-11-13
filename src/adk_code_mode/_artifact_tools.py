@@ -10,15 +10,18 @@ They appear in the rendered catalog as top-level tools; the model writes
 
 The wire format is JSON. Binary content is base64 over the wire — the model
 encodes it before calling ``save_artifact`` and decodes it after
-``load_artifact``. Loaded artifacts return a flat ``{"kind", "data",
-"mime_type"}`` dict so the model dispatches on ``kind`` without importing
-host-side types.
+``load_artifact``. By default loaded artifacts return a flat ``{"kind",
+"data", "mime_type"}`` dict so the model dispatches on ``kind`` without
+importing host-side types. ``ExecuteCodeTool(load_artifact_format="parsed")``
+swaps in a ``load_artifact`` that returns the content itself: parsed JSON, a
+``str`` for other text, or ``{"mime_type", "bytes"}`` for binary.
 """
 
 from __future__ import annotations
 
 import base64
-from typing import Any
+import json
+from typing import Any, Literal
 
 from google.adk.tools.function_tool import FunctionTool
 from google.adk.tools.tool_context import ToolContext
@@ -27,15 +30,41 @@ from google.genai import types as genai_types
 _TEXT_MIME_PREFIXES = ("text/",)
 _TEXT_MIME_TYPES = {"application/json", "application/xml", "application/javascript"}
 
+LoadArtifactFormat = Literal["envelope", "parsed"]
+"""What ``load_artifact`` returns.
+
+``"envelope"`` (the default) is ``{"kind", "data", "mime_type"}``. ``"parsed"``
+is the content itself: parsed JSON, a ``str`` for other text, or
+``{"mime_type", "bytes"}`` for binary.
+"""
+
 
 def _is_text_mime(mime_type: str | None) -> bool:
     if not mime_type:
         return False
+    mime_type = _base_mime(mime_type)
     if mime_type.startswith(_TEXT_MIME_PREFIXES):
         return True
     if mime_type in _TEXT_MIME_TYPES:
         return True
     return mime_type.endswith("+json") or mime_type.endswith("+xml")
+
+
+def _is_json_mime(mime_type: str | None) -> bool:
+    base = _base_mime(mime_type or "")
+    return base == "application/json" or base.endswith("+json")
+
+
+def _base_mime(mime_type: str) -> str:
+    return mime_type.split(";", 1)[0].strip().lower()
+
+
+def _charset(mime_type: str | None) -> str:
+    for param in (mime_type or "").split(";")[1:]:
+        key, _, value = param.partition("=")
+        if key.strip().lower() == "charset":
+            return value.strip().strip('"')
+    return "utf-8"
 
 
 async def save_artifact(
@@ -69,7 +98,7 @@ async def save_artifact(
     if _is_text_mime(mime_type):
         part = genai_types.Part(
             inline_data=genai_types.Blob(
-                data=content.encode("utf-8"),
+                data=content.encode(_charset(mime_type)),
                 mime_type=mime_type or "text/plain",
             )
         )
@@ -115,13 +144,11 @@ async def load_artifact(
     inline = part.inline_data
     if inline is not None:
         mime_type = inline.mime_type
-        data = inline.data or b""
-        if isinstance(data, str):
-            data = data.encode("utf-8")
+        data = _inline_bytes(inline)
         if _is_text_mime(mime_type):
             return {
                 "kind": "text",
-                "data": data.decode("utf-8"),
+                "data": data.decode(_charset(mime_type)),
                 "mime_type": mime_type,
             }
         return {
@@ -132,6 +159,56 @@ async def load_artifact(
     if part.text is not None:
         return {"kind": "text", "data": part.text, "mime_type": None}
     return {"kind": "text", "data": "", "mime_type": None}
+
+
+async def load_artifact_parsed(
+    *,
+    filename: str,
+    version: int | None = None,
+    tool_context: ToolContext,
+) -> Any:
+    """Load an artifact by filename and return its content. Returns ``None`` if not found.
+
+    The return value depends on the artifact's mime type:
+
+    - JSON (``application/json``, ``*+json``): the parsed value — for a saved
+      tool result, exactly what the original call returned.
+    - Other text (``text/*``, XML, JavaScript): the text as a ``str``.
+    - Binary: ``{"mime_type": <str>, "bytes": <base64 str>}``.
+
+    Example:
+
+        rows = load_artifact(filename="search_call-1.json")  # list/dict, already parsed
+        notes = load_artifact(filename="notes.txt")  # str
+        image = load_artifact(filename="chart.png")
+        png = base64.b64decode(image["bytes"])
+    """
+    part = await tool_context.load_artifact(filename, version=version)
+    if part is None:
+        return None
+    inline = part.inline_data
+    if inline is None:
+        return part.text or ""
+    mime_type = inline.mime_type
+    data = _inline_bytes(inline)
+    if not _is_text_mime(mime_type):
+        return {"mime_type": mime_type, "bytes": base64.b64encode(data).decode("ascii")}
+    text = data.decode(_charset(mime_type))
+    if _is_json_mime(mime_type):
+        try:
+            return json.loads(text)
+        except ValueError:
+            return text
+    return text
+
+
+# Code imports it as ``load_artifact`` whichever format the host picked.
+load_artifact_parsed.__name__ = load_artifact_parsed.__qualname__ = "load_artifact"
+
+
+def _inline_bytes(inline: genai_types.Blob) -> bytes:
+    data = inline.data or b""
+    return data.encode("utf-8") if isinstance(data, str) else data
 
 
 async def list_artifacts(*, tool_context: ToolContext) -> list[str]:
@@ -151,5 +228,28 @@ ARTIFACT_TOOLS: tuple[FunctionTool, ...] = (
     FunctionTool(list_artifacts),
 )
 
+_PARSED_ARTIFACT_TOOLS: tuple[FunctionTool, ...] = (
+    ARTIFACT_TOOLS[0],
+    FunctionTool(load_artifact_parsed),
+    ARTIFACT_TOOLS[2],
+)
 
-__all__ = ["ARTIFACT_TOOLS", "list_artifacts", "load_artifact", "save_artifact"]
+
+def artifact_tools(load_format: LoadArtifactFormat = "envelope") -> tuple[FunctionTool, ...]:
+    """Return the artifact tools, with ``load_artifact`` returning ``load_format``."""
+    if load_format == "envelope":
+        return ARTIFACT_TOOLS
+    if load_format == "parsed":
+        return _PARSED_ARTIFACT_TOOLS
+    raise ValueError(f"load_artifact_format must be 'envelope' or 'parsed', not {load_format!r}")
+
+
+__all__ = [
+    "ARTIFACT_TOOLS",
+    "LoadArtifactFormat",
+    "artifact_tools",
+    "list_artifacts",
+    "load_artifact",
+    "load_artifact_parsed",
+    "save_artifact",
+]

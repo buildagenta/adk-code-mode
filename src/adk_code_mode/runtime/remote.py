@@ -137,6 +137,7 @@ class RemoteBackend:
         return _RemoteSandboxSession(
             ws=ws,
             workdir_path=workdir_path,
+            max_message_size=self.max_message_size,
             max_upload_workspace_bytes=self.max_upload_workspace_bytes,
             max_download_workspace_bytes=self.max_download_workspace_bytes,
         )
@@ -148,11 +149,13 @@ class _RemoteSandboxSession:
         *,
         ws: Any,
         workdir_path: str,
+        max_message_size: int,
         max_upload_workspace_bytes: int,
         max_download_workspace_bytes: int,
     ) -> None:
         self._ws = ws
         self._workdir_path = workdir_path
+        self._max_message_size = max_message_size
         self._max_upload_workspace_bytes = max_upload_workspace_bytes
         self._max_download_workspace_bytes = max_download_workspace_bytes
 
@@ -172,6 +175,13 @@ class _RemoteSandboxSession:
 
     async def send(self, frame: Frame) -> None:
         payload = encode(frame)
+        # The sandbox closes the connection on an oversized message, so refuse it
+        # here instead; a tool reply then reaches the code as an error.
+        if len(payload) > self._max_message_size:
+            raise ValueError(
+                f"{type(frame).__name__} ({len(payload):,} bytes) exceeds "
+                f"max_message_size ({self._max_message_size:,})"
+            )
         try:
             await self._ws.send(payload.decode("utf-8"))
         except websockets.ConnectionClosed as exc:

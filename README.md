@@ -228,6 +228,12 @@ print(list_artifacts())
 report = json.loads(load_artifact(filename="report.json")["data"])
 ```
 
+Pass `load_artifact_format="parsed"` to have `load_artifact` return the content itself instead: the parsed value for JSON, a `str` for other text, and `{"mime_type": str, "bytes": str}` (base64) for binary. Its docstring in the stubs and catalog follows the format, so the model is told which one it gets:
+
+```python
+report = load_artifact(filename="report.json")  # {"status": "ready"}, already parsed
+```
+
 Pass `include_artifact_tools=False` to opt out. To react when the model saves an artifact, pass `on_artifacts_saved`:
 
 ```python
@@ -241,7 +247,7 @@ ExecuteCodeTool(tools=..., backend=..., on_artifacts_saved=on_saved)
 
 ### Tool results as artifacts
 
-By default (`save_tool_results_as_artifacts=True`) every non-artifact tool is wrapped so its return value is saved as a session artifact tagged `code_mode.tool_result = "true"`. This lets a host forward tool outputs to the user (read the marker in `on_artifacts_saved`) and lets a later turn reload a result with `load_artifact`. Results over 50,000 bytes return a dictionary with a `tool_result_artifact` filename and a `note` instead of the inline result.
+By default (`save_tool_results_as_artifacts=True`) every non-artifact tool is wrapped so its return value is saved as a session artifact tagged `code_mode.tool_result = "true"`. This lets a host forward tool outputs to the user (read the marker in `on_artifacts_saved`) and lets a later turn reload a result with `load_artifact`. Results over 50,000 bytes return a dictionary with a `tool_result_artifact` filename and a `note` instead of the inline result. Pass `large_result_threshold` to change the limit, or `None` so the code always gets the full result. It is still saved as an artifact, and the stubs, catalog and tool description stop mentioning the pointer.
 
 Naming is transparent: the filename is derived from the tool name and call id. Each wrapped tool also gains two **optional** parameters — `artifact_name` and `artifact_description` — that the model may pass to name/describe the saved artifact; both land in the artifact's `custom_metadata` (`code_mode.artifact_name` / `code_mode.artifact_description`) alongside the marker. Set `save_tool_results_as_artifacts=False` to return tool results inline without persisting them.
 
@@ -272,6 +278,8 @@ All settings are `ExecuteCodeTool` constructor arguments:
 | `max_code_mode_metadata_chars` | `50_000` | Budget for the whole rendered `<code-mode>` block, tags included. Oversized blocks degrade in tiers rather than disappearing — see [What the model sees](#what-the-model-sees). |
 | `max_output_chars` | `50_000` | Caps stdout/stderr handed back to the model. Overflow is saved as a session artifact at `code_mode/stdout/<call-id>.txt` and the model sees a head-and-tail view pointing to it. |
 | `max_code_chars` | `1_000_000` | Rejects oversized code payloads before starting a container. |
+| `large_result_threshold` | `50_000` | With `save_tool_results_as_artifacts`, a tool result whose serialised form is over this many bytes is replaced with a `tool_result_artifact` pointer to its saved artifact. `None` always returns the full result. See [Tool results as artifacts](#tool-results-as-artifacts). |
+| `load_artifact_format` | `"envelope"` | What `load_artifact` returns: `"envelope"` for `{"kind", "data", "mime_type"}`, or `"parsed"` for the content itself. See [Storage](#-storage). |
 | `timeout_seconds` | `60` | Caps overall execution time of one `execute_code` call, and with it every tool the block calls. A block past the cap is stopped with its output so far, keeping the turn's variables and working directory. If it won't stop within a few seconds or leaves a worker thread or child process running, its sandbox is restarted and its output and state are lost. The model is told the cap. `None` lifts it, leaving the platform request timeout (e.g. Cloud Run `--timeout`) as the only bound. |
 | `per_tool_timeout_seconds` | `None` | Caps each individual tool call made from within the sandbox. |
 | `session_idle_timeout_seconds` | `600` | Idle reaper: closes a turn's container once it goes untouched this long. Backstop for turns that never call `release_invocation`. |
@@ -320,7 +328,7 @@ other failures raise `ToolError`. Import both from `tools`. Each call can run fo
 to 60s.
 ~~~
 
-With `append_code_mode_metadata_to_system_instruction` disabled that middle sentence is replaced by the discovery text the pointer tier uses (see [Fitting the budget](#fitting-the-budget)), so the description never points at a section that wasn't appended. With `save_tool_results_as_artifacts=False` the description drops "and every tool's result" and the sentence about large results, and with `include_artifact_tools=False` it drops the `load_artifact` clause. The last sentence follows `timeout_seconds` and is left out when it's `None`.
+With `append_code_mode_metadata_to_system_instruction` disabled that middle sentence is replaced by the discovery text the pointer tier uses (see [Fitting the budget](#fitting-the-budget)), so the description never points at a section that wasn't appended. With `save_tool_results_as_artifacts=False` the description drops "and every tool's result" and the sentence about large results, with `large_result_threshold=None` it drops only the sentence about large results, and with `include_artifact_tools=False` it drops the `load_artifact` clause. The last sentence follows `timeout_seconds` and is left out when it's `None`.
 
 The **`<code-mode>` block** is the per-deployment inventory of the sandbox, appended to the system instruction on every model turn:
 
@@ -365,7 +373,7 @@ from tools import save_artifact, load_artifact, list_artifacts
 </code-mode>
 ~~~
 
-Return types come from each tool's `response_json_schema`, or an MCP tool's `outputSchema`; a tool without one returns `Any`. Objects become `TypedDict` classes named after their `$defs` key or `title`, else the property holding them. Identical shapes share one class across a module, defined once at the top of its catalog section; a name clash with another module's class falls back to the tool's or parent's name; each stub file carries the classes its tool uses. An MCP tool's `outputSchema` describes the `structuredContent` field in its result. A saved tool result can also be a `ToolResultArtifact` pointer when it exceeds the size threshold. A tool with exactly one required parameter takes it positionally (`load_artifact("report.csv", version=2)`); every other parameter is keyword-only.
+Return types come from each tool's `response_json_schema`, or an MCP tool's `outputSchema`; a tool without one returns `Any`. Objects become `TypedDict` classes named after their `$defs` key or `title`, else the property holding them. Identical shapes share one class across a module, defined once at the top of its catalog section; a name clash with another module's class falls back to the tool's or parent's name; each stub file carries the classes its tool uses. An MCP tool's `outputSchema` describes the `structuredContent` field in its result. A saved tool result can also be a `ToolResultArtifact` pointer when it exceeds the size threshold, unless `large_result_threshold=None`. A tool with exactly one required parameter takes it positionally (`load_artifact("report.csv", version=2)`); every other parameter is keyword-only.
 
 Tags are indented; their content is not. The `<tools-package>` body is Python source, where leading whitespace is meaningful. Each installed-package line is `<import name>: <distribution> <version>`; namespace imports supplied by multiple distributions list every provider in deterministic order. Import names and providers are sorted so the block stays byte-stable for prompt caching. `<python-version>` and `<installed-packages>` are omitted entirely — rather than rendered blank — when the sandbox hasn't reported yet or the image has no extra packages, since an empty tag reads as "none exist".
 
@@ -406,7 +414,7 @@ print(open("/tools/slack/send_message.py").read())  # types, signature + docstri
 print(open("/tools/slack/list_channels.py").read())
 ```
 
-Text and JSON-like MIME types travel as plain strings in artifact tools; binary content is base64-encoded. `load_artifact` returns a dictionary with `kind`, `data`, and `mime_type`. Text and JSON use `kind="text"` and keep the string in `data`. Binary artifacts use `kind="bytes"` and store base64 in `data`.
+Text and JSON-like MIME types travel as plain strings in artifact tools; binary content is base64-encoded. `load_artifact` returns a dictionary with `kind`, `data`, and `mime_type`. Text and JSON use `kind="text"` and keep the string in `data`. Binary artifacts use `kind="bytes"` and store base64 in `data`. With `load_artifact_format="parsed"` it returns the parsed value for JSON, a `str` for other text, and `{"mime_type": str, "bytes": str}` (base64) for binary.
 
 ## 🛡️ Safety
 

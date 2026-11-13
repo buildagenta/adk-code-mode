@@ -25,6 +25,7 @@ from google.adk.tools.base_tool import BaseTool
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types as genai_types
 
+from adk_code_mode._artifact_tools import ARTIFACT_TOOLS, load_artifact, load_artifact_parsed
 from adk_code_mode.tool import ExecuteCodeTool
 from tests._fake_runtime import FakeRuntime
 
@@ -107,6 +108,42 @@ def test_description_says_what_is_saved_and_how_to_load_it(
         save_tool_results_as_artifacts=tool_results,
     )
     assert expected in tool.description
+
+
+_POINTER_SENTENCE = " Large tool results return a `tool_result_artifact` pointer."
+
+
+def test_description_mentions_the_large_result_pointer_by_default() -> None:
+    assert _POINTER_SENTENCE in ExecuteCodeTool(backend=FakeRuntime()).description
+
+
+def test_description_drops_the_pointer_when_large_results_are_returned_in_full() -> None:
+    tool = ExecuteCodeTool(backend=FakeRuntime(), large_result_threshold=None)
+    assert "tool_result_artifact" not in tool.description
+    assert "to read one in a later turn. Tool calls that call APIs" in tool.description
+
+
+def _load_artifact_func(tool: ExecuteCodeTool) -> Any:
+    [load] = [t for t in tool.tools if isinstance(t, BaseTool) and t.name == "load_artifact"]
+    return getattr(load, "func")
+
+
+def test_load_artifact_returns_the_envelope_by_default() -> None:
+    tool = ExecuteCodeTool(backend=FakeRuntime())
+    assert _load_artifact_func(tool) is load_artifact
+    assert all(t in tool.tools for t in ARTIFACT_TOOLS)
+
+
+def test_load_artifact_format_parsed_injects_the_parsed_load_artifact() -> None:
+    tool = ExecuteCodeTool(backend=FakeRuntime(), load_artifact_format="parsed")
+    assert _load_artifact_func(tool) is load_artifact_parsed
+    names = [t.name for t in tool.tools if isinstance(t, BaseTool)]
+    assert names == ["save_artifact", "load_artifact", "list_artifacts"]
+
+
+def test_load_artifact_format_rejects_an_unknown_value() -> None:
+    with pytest.raises(ValueError, match="load_artifact_format"):
+        ExecuteCodeTool(backend=FakeRuntime(), load_artifact_format="raw")  # type: ignore[arg-type]
 
 
 def test_tools_and_backend_properties_expose_the_configured_surface() -> None:

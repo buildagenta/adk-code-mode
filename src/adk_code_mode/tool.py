@@ -41,7 +41,7 @@ from google.adk.tools.tool_context import ToolContext
 from google.genai import types as genai_types
 
 from adk_code_mode import metadata
-from adk_code_mode._artifact_tools import ARTIFACT_TOOLS
+from adk_code_mode._artifact_tools import ARTIFACT_TOOLS, LoadArtifactFormat, artifact_tools
 from adk_code_mode._json import json_safe
 from adk_code_mode.output import truncate
 from adk_code_mode.runtime.base import (
@@ -62,7 +62,10 @@ from adk_code_mode.runtime.protocol import (
     ToolErrorPayload,
     ToolResultFrame,
 )
-from adk_code_mode.tool_result_artifacts import ToolResultArtifactTool
+from adk_code_mode.tool_result_artifacts import (
+    DEFAULT_LARGE_RESULT_THRESHOLD,
+    ToolResultArtifactTool,
+)
 from adk_code_mode.tools import namespacing, normaliser, stubs
 from adk_code_mode.tools.dispatcher import DispatchResult, Dispatcher
 from adk_code_mode.workspace.files import hash_file, walk_workspace
@@ -151,6 +154,7 @@ def _build_description(
     append_metadata: bool,
     artifact_tools: bool,
     tool_results: bool,
+    result_pointers: bool,
     timeout_seconds: int | None,
 ) -> str:
     """Build the tool description for this tool's configured surface."""
@@ -161,7 +165,7 @@ def _build_description(
     saved = f" {saved} is saved as an artifact"
     if artifact_tools:
         saved += "; use `load_artifact` (imported the same way) to read one in a later turn"
-    if tool_results:
+    if tool_results and result_pointers:
         saved += ". Large tool results return a `tool_result_artifact` pointer"
     limit = f" Each call can run for up to {timeout_seconds}s." if timeout_seconds else ""
     return (
@@ -226,6 +230,8 @@ class ExecuteCodeTool(BaseTool):
         backend: SandboxBackend,
         include_artifact_tools: bool = True,
         save_tool_results_as_artifacts: bool = True,
+        large_result_threshold: int | None = DEFAULT_LARGE_RESULT_THRESHOLD,
+        load_artifact_format: LoadArtifactFormat = "envelope",
         append_code_mode_metadata_to_system_instruction: bool = True,
         max_code_mode_metadata_chars: int = 50_000,
         max_output_chars: int = 50_000,
@@ -249,8 +255,20 @@ class ExecuteCodeTool(BaseTool):
           save_tool_results_as_artifacts: If true (default), every non-artifact
             tool is wrapped so its result is also saved as a session artifact,
             reloadable in later turns via ``load_artifact``. Large results
-            return an artifact pointer. Set ``False`` to skip saving and
-            always get the full result inline.
+            return an artifact pointer (see ``large_result_threshold``). Set
+            ``False`` to skip saving and always get the full result inline.
+          large_result_threshold: With ``save_tool_results_as_artifacts``, a
+            result whose serialised form is over this many bytes (default
+            50,000) is replaced in the reply with a ``{"tool_result_artifact",
+            "note"}`` pointer to its saved artifact. ``None`` never replaces a
+            result: the code always gets it in full, and it is still saved.
+            Stubs and the tool description only mention the pointer when it
+            can occur.
+          load_artifact_format: What the injected ``load_artifact`` returns.
+            ``"envelope"`` (default) returns ``{"kind", "data", "mime_type"}``.
+            ``"parsed"`` returns the content itself: the parsed value for JSON,
+            a ``str`` for other text, and ``{"mime_type", "bytes"}`` (base64)
+            for binary. Its docstring in the stubs matches the format.
           append_code_mode_metadata_to_system_instruction: If true (default),
             every model turn's system instruction gets a ``<code-mode>`` block
             describing the sandbox: its Python version, its preinstalled
@@ -296,13 +314,15 @@ class ExecuteCodeTool(BaseTool):
                 append_metadata=append_code_mode_metadata_to_system_instruction,
                 artifact_tools=include_artifact_tools,
                 tool_results=save_tool_results_as_artifacts,
+                result_pointers=large_result_threshold is not None,
                 timeout_seconds=timeout_seconds,
             ),
         )
 
+        builtin_artifact_tools = artifact_tools(load_artifact_format)
         adapted: list[BaseTool | BaseToolset] = []
         if include_artifact_tools:
-            adapted.extend(ARTIFACT_TOOLS)
+            adapted.extend(builtin_artifact_tools)
         for item in tools:
             if isinstance(item, (BaseTool, BaseToolset)):
                 adapted.append(item)
@@ -317,6 +337,7 @@ class ExecuteCodeTool(BaseTool):
         self._tools = adapted
         self._backend = backend
         self._save_tool_results_as_artifacts = save_tool_results_as_artifacts
+        self._large_result_threshold = large_result_threshold
         self._append_code_mode_metadata_to_system_instruction = (
             append_code_mode_metadata_to_system_instruction
         )
@@ -545,7 +566,10 @@ class ExecuteCodeTool(BaseTool):
             if isinstance(rt.tool, ToolResultArtifactTool) or rt.tool.name in _ARTIFACT_TOOL_NAMES:
                 wrapped.append(rt)
             else:
-                wrapped.append(dataclasses.replace(rt, tool=ToolResultArtifactTool(rt.tool)))
+                tool = ToolResultArtifactTool(
+                    rt.tool, large_result_threshold=self._large_result_threshold
+                )
+                wrapped.append(dataclasses.replace(rt, tool=tool))
         return wrapped
 
     async def _run_attempt(

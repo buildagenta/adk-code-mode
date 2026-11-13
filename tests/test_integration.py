@@ -55,6 +55,21 @@ class _EchoTool(BaseTool):
         return {"echoed": args.get("message", "")}
 
 
+class _BigTool(BaseTool):
+    def __init__(self) -> None:
+        super().__init__(name="big", description="Return a result over the default threshold.")
+
+    def _get_declaration(self) -> genai_types.FunctionDeclaration | None:
+        return genai_types.FunctionDeclaration(
+            name=self.name,
+            description=self.description,
+            parameters_json_schema={"type": "object", "properties": {}},
+        )
+
+    async def run_async(self, *, args: dict[str, Any], tool_context: Any) -> Any:
+        return {"blob": "x" * 60_000}
+
+
 class _OptionalArgTool(BaseTool):
     def __init__(self) -> None:
         super().__init__(name="optional_lookup", description="Optional-arg tool.")
@@ -278,6 +293,74 @@ async def test_artifact_helpers_support_binary_content() -> None:
     result = await _run(tool, ctx, load, call_id="run-bin-2")
 
     assert "bytes b'\\x00\\x01\\x02' application/octet-stream" in result["stdout"]
+
+
+@pytest.mark.asyncio
+async def test_large_tool_result_returns_a_pointer_by_default() -> None:
+    artifact_service = InMemoryArtifactService()
+    session = Session(
+        id="s2-pointer",
+        app_name="test-app",
+        user_id="u1",
+        state={},
+        events=[],
+        last_update_time=0.0,
+    )
+    ctx = _make_invocation_context(artifact_service, session)
+    tool = ExecuteCodeTool(tools=[_BigTool()], backend=FakeRuntime(), max_output_chars=10_000)
+    code = (
+        "import json\n"
+        "from tools import big, load_artifact\n"
+        "result = big()\n"
+        "print('keys', sorted(result))\n"
+        "saved = load_artifact(filename=result['tool_result_artifact'])\n"
+        "print('saved', saved['kind'], len(json.loads(saved['data'])['blob']))\n"
+    )
+    result = await _run(tool, ctx, code, call_id="run-pointer")
+
+    assert "keys ['note', 'tool_result_artifact']" in result["stdout"]
+    assert "saved text 60000" in result["stdout"]
+
+
+@pytest.mark.asyncio
+async def test_opt_ins_return_full_tool_results_and_parsed_artifacts() -> None:
+    artifact_service = InMemoryArtifactService()
+    session = Session(
+        id="s2-opt-in", app_name="test-app", user_id="u1", state={}, events=[], last_update_time=0.0
+    )
+    ctx = _make_invocation_context(artifact_service, session)
+    tool = ExecuteCodeTool(
+        tools=[_BigTool()],
+        backend=FakeRuntime(),
+        max_output_chars=10_000,
+        large_result_threshold=None,
+        load_artifact_format="parsed",
+    )
+    code = (
+        "import base64, json\n"
+        "from tools import big, list_artifacts, load_artifact, save_artifact\n"
+        "result = big()\n"
+        "print('blob', len(result['blob']))\n"
+        "[saved] = [name for name in list_artifacts() if name.startswith('big_')]\n"
+        "print('saved', load_artifact(filename=saved) == result)\n"
+        "save_artifact(\n"
+        "    filename='report.json', content=json.dumps({'ok': True}), mime_type='application/json'\n"
+        ")\n"
+        "print('json', load_artifact(filename='report.json'))\n"
+        "save_artifact(\n"
+        "    filename='blob.bin',\n"
+        "    content=base64.b64encode(b'\\x00\\x01').decode('ascii'),\n"
+        "    mime_type='application/octet-stream',\n"
+        ")\n"
+        "blob = load_artifact('blob.bin')\n"
+        "print('bin', base64.b64decode(blob['bytes']), blob['mime_type'])\n"
+    )
+    result = await _run(tool, ctx, code, call_id="run-opt-in")
+
+    assert "blob 60000" in result["stdout"]
+    assert "saved True" in result["stdout"]
+    assert "json {'ok': True}" in result["stdout"]
+    assert "bin b'\\x00\\x01' application/octet-stream" in result["stdout"]
 
 
 @pytest.mark.asyncio

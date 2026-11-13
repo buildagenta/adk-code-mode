@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2025-present Agenta <hello@buildagenta.com>
 #
 # SPDX-License-Identifier: Apache-2.0
-"""JSON-safe conversion for the sandbox RPC reply."""
+"""JSON-safe conversion shared by the RPC reply and saved tool results."""
 
 from __future__ import annotations
 

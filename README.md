@@ -15,7 +15,7 @@ Inspired by Cloudflare's [Code Mode](https://blog.cloudflare.com/code-mode/) and
 - **Failed tool calls raise** — a REST tool whose API answers with an HTTP error raises `HTTPStatusError` (with `status_code` and `body`), and any other failure, including an MCP tool that reports one, raises `ToolError`. ADK returns these as values for a model to read, but sandbox code reads return values, so it would otherwise carry on as if the call had worked.
 - **Bake any Python package into the image** — extend the published base image with anything the model's code needs to `import`, no runtime `pip install` required. The sandbox reports what it has installed, so the model is told about it automatically.
 - **Cross-turn persistence via ADK Artifacts** — files the code creates or changes are saved as artifacts automatically, and `save_artifact` / `load_artifact` / `list_artifacts` are auto-injected and route through your configured `ArtifactService`.
-- **Tool results saved as artifacts** — on by default; every tool's result is persisted as a `code_mode.tool_result` artifact (with optional model-supplied name/description) so hosts can forward outputs and large results stay out of the prompt. Opt out with `save_tool_results_as_artifacts=False`.
+- **Tool results saved as artifacts** — on by default; every tool's result is persisted as a `code_mode.tool_result` artifact (with optional model-supplied name/description) so hosts can forward outputs and later turns can reload them. The code always gets the full result. Opt out with `save_tool_results_as_artifacts=False`.
 - **Bounded stdout/stderr** — overflow lands in a session artifact instead of poisoning the prompt.
 - **Production-ready remote sandbox** — `RemoteBackend` connects to an isolated per-turn container over WebSocket, reused across the turn's `execute_code` calls. Deploy on any cloud platform (Cloud Run, Fargate, ACI, Kubernetes, Fly.io, etc.).
 - **Local development** — `UnsafeLocalDockerBackend` runs the sandbox against your local Docker daemon for fast iteration. **Not for production** — see [Safety](#-safety).
@@ -225,7 +225,7 @@ save_artifact(
     mime_type="application/json",
 )
 print(list_artifacts())
-report = json.loads(load_artifact(filename="report.json")["data"])
+report = load_artifact(filename="report.json")  # {"status": "ready"}, already parsed
 ```
 
 Pass `include_artifact_tools=False` to opt out. To react when the model saves an artifact, pass `on_artifacts_saved`:
@@ -241,7 +241,7 @@ ExecuteCodeTool(tools=..., backend=..., on_artifacts_saved=on_saved)
 
 ### Tool results as artifacts
 
-By default (`save_tool_results_as_artifacts=True`) every non-artifact tool is wrapped so its return value is saved as a session artifact tagged `code_mode.tool_result = "true"`. This lets a host forward tool outputs to the user (read the marker in `on_artifacts_saved`) and lets a later turn reload a result with `load_artifact`. Results over 50,000 bytes return a dictionary with a `tool_result_artifact` filename and a `note` instead of the inline result.
+By default (`save_tool_results_as_artifacts=True`) every non-artifact tool is wrapped so its return value is saved as a session artifact tagged `code_mode.tool_result = "true"`. This lets a host forward tool outputs to the user (read the marker in `on_artifacts_saved`) and lets a later turn reload a result with `load_artifact`. The code always gets the full result.
 
 Naming is transparent: the filename is derived from the tool name and call id. Each wrapped tool also gains two **optional** parameters — `artifact_name` and `artifact_description` — that the model may pass to name/describe the saved artifact; both land in the artifact's `custom_metadata` (`code_mode.artifact_name` / `code_mode.artifact_description`) alongside the marker. Set `save_tool_results_as_artifacts=False` to return tool results inline without persisting them.
 
@@ -281,7 +281,7 @@ The model can read spilled stdout back from the overflow artifact:
 ```python
 from tools import load_artifact
 spilled = load_artifact(filename="code_mode/stdout/<call-id>.txt")
-print(spilled["data"][-2000:])
+print(spilled[-2000:])
 ```
 
 ### Turn-scoped sessions
@@ -313,14 +313,13 @@ preinstalled packages, and available functions. Print function calls, variables,
 to see output, only stdout/stderr are returned. Variables and files persist across
 calls within the same turn and reset on the next turn. Every file the code writes in
 the working directory, and every tool's result, is saved as an artifact; use
-`load_artifact` (imported the same way) to read one in a later turn. Large tool
-results return a `tool_result_artifact` pointer. Tool calls that
+`load_artifact` (imported the same way) to read one in a later turn. Tool calls that
 call APIs raise HTTP errors as `HTTPStatusError` (with `status_code` and `body`);
 other failures raise `ToolError`. Import both from `tools`. Each call can run for up
 to 60s.
 ~~~
 
-With `append_code_mode_metadata_to_system_instruction` disabled that middle sentence is replaced by the discovery text the pointer tier uses (see [Fitting the budget](#fitting-the-budget)), so the description never points at a section that wasn't appended. With `save_tool_results_as_artifacts=False` the description drops "and every tool's result" and the sentence about large results, and with `include_artifact_tools=False` it drops the `load_artifact` clause. The last sentence follows `timeout_seconds` and is left out when it's `None`.
+With `append_code_mode_metadata_to_system_instruction` disabled that middle sentence is replaced by the discovery text the pointer tier uses (see [Fitting the budget](#fitting-the-budget)), so the description never points at a section that wasn't appended. With `save_tool_results_as_artifacts=False` the description drops "and every tool's result", and with `include_artifact_tools=False` it drops the `load_artifact` clause. The last sentence follows `timeout_seconds` and is left out when it's `None`.
 
 The **`<code-mode>` block** is the per-deployment inventory of the sandbox, appended to the system instruction on every model turn:
 
@@ -365,7 +364,7 @@ from tools import save_artifact, load_artifact, list_artifacts
 </code-mode>
 ~~~
 
-Return types come from each tool's `response_json_schema`, or an MCP tool's `outputSchema`; a tool without one returns `Any`. Objects become `TypedDict` classes named after their `$defs` key or `title`, else the property holding them. Identical shapes share one class across a module, defined once at the top of its catalog section; a name clash with another module's class falls back to the tool's or parent's name; each stub file carries the classes its tool uses. An MCP tool's `outputSchema` describes the `structuredContent` field in its result. A saved tool result can also be a `ToolResultArtifact` pointer when it exceeds the size threshold. A tool with exactly one required parameter takes it positionally (`load_artifact("report.csv", version=2)`); every other parameter is keyword-only.
+Return types come from each tool's `response_json_schema`, or an MCP tool's `outputSchema`; a tool without one returns `Any`. Objects become `TypedDict` classes named after their `$defs` key or `title`, else the property holding them. Identical shapes share one class across a module, defined once at the top of its catalog section; a name clash with another module's class falls back to the tool's or parent's name; each stub file carries the classes its tool uses. An MCP tool's `outputSchema` describes the `structuredContent` field in its result. A tool with exactly one required parameter takes it positionally (`load_artifact("report.csv", version=2)`); every other parameter is keyword-only.
 
 Tags are indented; their content is not. The `<tools-package>` body is Python source, where leading whitespace is meaningful. Each installed-package line is `<import name>: <distribution> <version>`; namespace imports supplied by multiple distributions list every provider in deterministic order. Import names and providers are sorted so the block stays byte-stable for prompt caching. `<python-version>` and `<installed-packages>` are omitted entirely — rather than rendered blank — when the sandbox hasn't reported yet or the image has no extra packages, since an empty tag reads as "none exist".
 
@@ -406,7 +405,7 @@ print(open("/tools/slack/send_message.py").read())  # types, signature + docstri
 print(open("/tools/slack/list_channels.py").read())
 ```
 
-Text and JSON-like MIME types travel as plain strings in artifact tools; binary content is base64-encoded. `load_artifact` returns a dictionary with `kind`, `data`, and `mime_type`. Text and JSON use `kind="text"` and keep the string in `data`. Binary artifacts use `kind="bytes"` and store base64 in `data`.
+Text and JSON-like MIME types travel as plain strings in artifact tools; binary content is base64-encoded. `load_artifact` returns the content itself: the parsed value for JSON, a `str` for other text, and `{"mime_type": str, "bytes": str}` (base64) for binary.
 
 ## 🛡️ Safety
 

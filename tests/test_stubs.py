@@ -553,15 +553,14 @@ def test_mcp_output_schema_becomes_typed_dict_return_type() -> None:
     assert _load_stub(source)["BookingsItem"].__name__ == "BookingsItem"
 
 
-def test_wrapped_tool_return_type_includes_the_large_result_pointer() -> None:
+def test_wrapped_tool_keeps_the_wrapped_return_type() -> None:
+    # Saving the result as an artifact never replaces it, so the type is unchanged.
     tool = ToolResultArtifactTool(
         _SchemaTool("count", description="Count records.", response={"type": "integer"})
     )
     rt = stubs.render_tool(_build([(tool, None)])[0])
-    assert rt.return_type == "int | ToolResultArtifact"
-    assert rt.types == (
-        "class ToolResultArtifact(TypedDict):\n    tool_result_artifact: str\n    note: str",
-    )
+    assert rt.return_type == "int"
+    assert rt.types == ()
 
 
 def test_identical_shapes_share_one_class_across_a_module() -> None:

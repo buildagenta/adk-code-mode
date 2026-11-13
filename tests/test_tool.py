@@ -107,6 +107,8 @@ def test_description_says_what_is_saved_and_how_to_load_it(
         save_tool_results_as_artifacts=tool_results,
     )
     assert expected in tool.description
+    # The code always gets the full result, so there is no pointer to describe.
+    assert "tool_result_artifact" not in tool.description
 
 
 def test_tools_and_backend_properties_expose_the_configured_surface() -> None:

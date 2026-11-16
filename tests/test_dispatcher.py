@@ -379,34 +379,6 @@ class _ResultTool(BaseTool):
         return self._result
 
 
-async def test_mcp_error_result_raises() -> None:
-    tool = _ResultTool({"content": [{"type": "text", "text": "Venue not found"}], "isError": True})
-    d = Dispatcher(invocation_context=_make_ctx(), registry=_registry(tool), execution_id="e1")  # type: ignore[arg-type]
-    result = await d.dispatch("lookup", {})
-    assert result.ok is False
-    assert result.error_type == "McpToolError"
-    assert result.error_message == "Tool `lookup` failed: Venue not found"
-
-
-async def test_mcp_error_raises_through_the_artifact_wrapper() -> None:
-    tool = ToolResultArtifactTool(
-        _ResultTool({"content": [{"type": "text", "text": "Venue not found"}], "isError": True})
-    )
-    d = Dispatcher(invocation_context=_make_ctx(), registry=_registry(tool), execution_id="e1")  # type: ignore[arg-type]
-    result = await d.dispatch("lookup", {})
-    assert result.ok is False
-    assert result.error_type == "McpToolError"
-    assert result.error_message == "Tool `lookup` failed: Venue not found"
-
-
-async def test_other_tools_returning_an_error_key_are_left_alone() -> None:
-    tool = _ResultTool({"error": "Nothing matched"})
-    d = Dispatcher(invocation_context=_make_ctx(), registry=_registry(tool), execution_id="e1")  # type: ignore[arg-type]
-    result = await d.dispatch("lookup", {})
-    assert result.ok is True
-    assert result.value == {"error": "Nothing matched"}
-
-
 class _FakeMcpTool(McpTool):
     def __init__(self, result: Any, *, output_schema: dict[str, Any] | None) -> None:
         spec = McpToolSpec(
@@ -417,6 +389,36 @@ class _FakeMcpTool(McpTool):
 
     async def run_async(self, *, args: dict[str, Any], tool_context: Any) -> Any:
         return self._result
+
+
+_MCP_ERROR = {"content": [{"type": "text", "text": "Venue not found"}], "isError": True}
+
+
+async def test_mcp_error_result_raises() -> None:
+    tool = _FakeMcpTool(_MCP_ERROR, output_schema=None)
+    d = Dispatcher(invocation_context=_make_ctx(), registry=_registry(tool), execution_id="e1")  # type: ignore[arg-type]
+    result = await d.dispatch("lookup", {})
+    assert result.ok is False
+    assert result.error_type == "McpToolError"
+    assert result.error_message == "Tool `lookup` failed: Venue not found"
+
+
+async def test_mcp_error_raises_through_the_artifact_wrapper() -> None:
+    tool = ToolResultArtifactTool(_FakeMcpTool(_MCP_ERROR, output_schema=None))
+    d = Dispatcher(invocation_context=_make_ctx(), registry=_registry(tool), execution_id="e1")  # type: ignore[arg-type]
+    result = await d.dispatch("lookup", {})
+    assert result.ok is False
+    assert result.error_type == "McpToolError"
+    assert result.error_message == "Tool `lookup` failed: Venue not found"
+
+
+@pytest.mark.parametrize("value", [{"error": "Nothing matched"}, _MCP_ERROR])
+async def test_other_tools_returning_an_error_shape_are_left_alone(value: Any) -> None:
+    tool = _ResultTool(value)
+    d = Dispatcher(invocation_context=_make_ctx(), registry=_registry(tool), execution_id="e1")  # type: ignore[arg-type]
+    result = await d.dispatch("lookup", {})
+    assert result.ok is True
+    assert result.value == value
 
 
 _MCP_RESULT = {

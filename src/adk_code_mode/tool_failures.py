@@ -10,6 +10,7 @@ import re
 from typing import Any
 
 from google.adk.tools.base_tool import BaseTool
+from google.adk.tools.mcp_tool.mcp_tool import McpTool
 from google.adk.tools.openapi_tool.openapi_spec_parser.rest_api_tool import RestApiTool
 
 # ADK's `RestApiTool` returns an HTTP error as `{"error": "... Status Code: 400, <body>"}`.
@@ -44,8 +45,9 @@ def raise_for_failed_result(tool: BaseTool, result: Any) -> None:
         except ValueError:
             body = details
         raise HTTPStatusError(tool.name, int(match.group(1)), body)
-    # An MCP `CallToolResult` with `isError` set, as `McpTool` returns it.
-    if result.get("isError") is True:
+    # An MCP `CallToolResult` with `isError` set. Other tools, like `load_artifact`
+    # reading a saved failed result, return the same shape as ordinary data.
+    if isinstance(tool, McpTool) and result.get("isError") is True:
         texts = [
             item["text"]
             for item in result.get("content") or []

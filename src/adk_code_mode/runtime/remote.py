@@ -177,8 +177,9 @@ class _RemoteSandboxSession:
         payload = encode(frame)
         # The sandbox closes the connection on an oversized message, so refuse it
         # here instead; a tool reply then reaches the code as an error.
+        # `RuntimeError` makes the caller discard a turn whose block can't start.
         if len(payload) > self._max_message_size:
-            raise ValueError(
+            raise RuntimeError(
                 f"{type(frame).__name__} ({len(payload):,} bytes) exceeds "
                 f"max_message_size ({self._max_message_size:,})"
             )

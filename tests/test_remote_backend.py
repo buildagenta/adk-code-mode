@@ -102,7 +102,7 @@ async def test_send_refuses_a_frame_over_max_message_size() -> None:
     )
 
     await session.send(ToolResultFrame(id="1", ok=True, value="small"))
-    with pytest.raises(ValueError, match="exceeds max_message_size"):
+    with pytest.raises(RuntimeError, match="exceeds max_message_size"):
         await session.send(ToolResultFrame(id="2", ok=True, value="x" * 2_000))
 
     assert len(ws.sent) == 1

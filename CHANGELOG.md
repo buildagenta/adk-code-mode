@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.0](https://github.com/buildagenta/adk-code-mode/compare/adk-code-mode-v2.1.0...adk-code-mode-v2.2.0) (2026-11-16)
+
+
+### Features
+
+* return full tool results and parsed load_artifact content (re-applies [#27](https://github.com/buildagenta/adk-code-mode/issues/27)) ([#34](https://github.com/buildagenta/adk-code-mode/issues/34)) ([f39088e](https://github.com/buildagenta/adk-code-mode/commit/f39088e3f6118a9fff16a6198176a5854e9e3936))
+
 ## [2.1.0](https://github.com/buildagenta/adk-code-mode/compare/adk-code-mode-v2.0.1...adk-code-mode-v2.1.0) (2026-11-08)
 
 

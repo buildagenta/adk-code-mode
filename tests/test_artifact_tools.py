@@ -154,40 +154,58 @@ async def test_save_artifact_defaults_custom_metadata_to_none() -> None:
     assert custom_metadata is None
 
 
+@pytest.mark.parametrize(
+    ("data", "mime_type", "expected"),
+    [
+        (b'{"ok": true, "rows": [1, 2]}', "application/json", {"ok": True, "rows": [1, 2]}),
+        (b"[1, 2]", "application/json; charset=utf-8", [1, 2]),
+        (b'{"a": 1}', "application/ld+json", {"a": 1}),
+        (b"not json", "application/json", "not json"),
+        (b"# Report", "text/markdown", "# Report"),
+        (b"plain", "text/plain; charset=utf-8", "plain"),
+        ("<a>é</a>".encode("iso-8859-1"), "application/xml; charset=iso-8859-1", "<a>é</a>"),
+        (b"\x00\x01\x02", "image/png", {"mime_type": "image/png", "bytes": "AAEC"}),
+    ],
+)
 @pytest.mark.asyncio
-async def test_load_artifact_returns_text_kind_for_text_mime() -> None:
-    part = genai_types.Part(
-        inline_data=genai_types.Blob(data=b'{"ok": true}', mime_type="application/json")
-    )
+async def test_load_artifact_returns_the_content(
+    data: bytes, mime_type: str, expected: Any
+) -> None:
+    part = genai_types.Part(inline_data=genai_types.Blob(data=data, mime_type=mime_type))
     ctx = _StubToolContext(load_result=part)
-    result = await load_artifact(
-        filename="report.json",
-        tool_context=ctx,  # type: ignore[arg-type]
-    )
-
-    assert result == {
-        "kind": "text",
-        "data": '{"ok": true}',
-        "mime_type": "application/json",
-    }
+    result = await load_artifact(filename="a", tool_context=ctx)  # type: ignore[arg-type]
+    assert result == expected
 
 
 @pytest.mark.asyncio
-async def test_load_artifact_returns_bytes_kind_for_binary_mime() -> None:
-    raw = b"\x00\x01\x02"
-    part = genai_types.Part(
-        inline_data=genai_types.Blob(data=raw, mime_type="application/octet-stream")
-    )
-    ctx = _StubToolContext(load_result=part)
-    result = await load_artifact(
-        filename="blob.bin",
-        tool_context=ctx,  # type: ignore[arg-type]
-    )
+async def test_load_artifact_returns_text_part_as_str() -> None:
+    ctx = _StubToolContext(load_result=genai_types.Part(text="hello"))
+    assert await load_artifact(filename="a", tool_context=ctx) == "hello"  # type: ignore[arg-type]
 
-    assert result is not None
-    assert result["kind"] == "bytes"
-    assert result["mime_type"] == "application/octet-stream"
-    assert base64.b64decode(result["data"]) == raw
+
+@pytest.mark.parametrize(
+    ("content", "mime_type", "expected"),
+    [
+        ('{"status": "ok", "n": [1, 2]}', "application/json", {"status": "ok", "n": [1, 2]}),
+        ("# Notes", "text/markdown", "# Notes"),
+        ("café", "text/plain; charset=iso-8859-1", "café"),
+        ("AAEC", "image/png", {"mime_type": "image/png", "bytes": "AAEC"}),
+        ("AAEC", None, {"mime_type": "application/octet-stream", "bytes": "AAEC"}),
+    ],
+)
+@pytest.mark.asyncio
+async def test_save_artifact_round_trips_through_load_artifact(
+    content: str, mime_type: str | None, expected: Any
+) -> None:
+    saver = _StubToolContext()
+    await save_artifact(
+        filename="a",
+        content=content,
+        mime_type=mime_type,
+        tool_context=saver,  # type: ignore[arg-type]
+    )
+    loader = _StubToolContext(load_result=saver.saved[0][1])
+    assert await load_artifact(filename="a", tool_context=loader) == expected  # type: ignore[arg-type]
 
 
 @pytest.mark.asyncio

@@ -11,8 +11,8 @@ instead of writing a fenced code block in plain text that ADK regex-extracts.
 A sandbox container is held open for the duration of a **turn** (one ADK
 invocation): the first call connects and uploads the tools, later calls reuse
 the live session with persistent globals + the working directory, and the
-container is released when the turn ends (``release_invocation``, with an
-idle reaper as a safety net).
+container is released when the turn ends (``release_invocation``, or ``close``
+once the tool is done, with an idle reaper as a safety net).
 """
 
 from __future__ import annotations
@@ -280,7 +280,8 @@ class ExecuteCodeTool(BaseTool):
             within the sandbox.
           session_idle_timeout_seconds: Idle reaper: closes a turn's container
             once it goes untouched this long. Backstop for turns that never
-            call ``release_invocation``.
+            call ``release_invocation`` or ``close``. It stops once the tool is
+            garbage-collected.
           on_artifacts_saved: Optional async callback fired after each
             ``execute_code`` whose sandbox-side ``save_artifact`` calls
             produced new artifact versions. Receives the live
@@ -479,6 +480,23 @@ class ExecuteCodeTool(BaseTool):
         with self._turns_lock:
             turn = self._turns.pop(invocation_id, None)
         if turn is not None:
+            await turn.aclose()
+
+    async def close(self) -> None:
+        """Release every sandbox container this tool still holds, in use or not.
+
+        ADK skips ``after_agent_callback`` when an invocation stops early (it raises,
+        is cancelled, or its event stream is closed before it finishes), so
+        ``release_invocation`` never runs for that turn. Call this once nothing is
+        using the tool, e.g. when tearing down a request-scoped agent.
+        """
+        if self._reaper_task is not None:
+            self._reaper_task.cancel()
+            self._reaper_task = None
+        with self._turns_lock:
+            turns = list(self._turns.values())
+            self._turns.clear()
+        for turn in turns:
             await turn.aclose()
 
     def _ensure_reaper_started(self) -> None:

@@ -53,7 +53,7 @@ Requires Python 3.10+. Local development requires [Docker](https://docs.docker.c
 
 ## 🚀 Usage
 
-Build an `ExecuteCodeTool`, give it the tools the sandboxed code may call, and attach it to your agent. Wire `release_invocation` into `after_agent_callback` to release the turn's sandbox container when the turn ends. An idle reaper (`session_idle_timeout_seconds`, default `600`) is a backstop.
+Build an `ExecuteCodeTool`, give it the tools the sandboxed code may call, and attach it to your agent. Wire `release_invocation` into `after_agent_callback` to release the turn's sandbox container when the turn ends. ADK skips that callback when an invocation stops early (it raises, is cancelled, or its event stream is closed before it finishes), so also `await tool.close()` once nothing is using the tool, e.g. when tearing down a request-scoped agent. An idle reaper (`session_idle_timeout_seconds`, default `600`) is a backstop while the tool is alive.
 
 ### Production (remote sandbox)
 
@@ -274,7 +274,7 @@ All settings are `ExecuteCodeTool` constructor arguments:
 | `max_code_chars` | `1_000_000` | Rejects oversized code payloads before starting a container. |
 | `timeout_seconds` | `60` | Caps overall execution time of one `execute_code` call, and with it every tool the block calls. A block past the cap is stopped with its output so far, keeping the turn's variables and working directory. If it won't stop within a few seconds or leaves a worker thread or child process running, its sandbox is restarted and its output and state are lost. The model is told the cap. `None` lifts it, leaving the platform request timeout (e.g. Cloud Run `--timeout`) as the only bound. |
 | `per_tool_timeout_seconds` | `None` | Caps each individual tool call made from within the sandbox. |
-| `session_idle_timeout_seconds` | `600` | Idle reaper: closes a turn's container once it goes untouched this long. Backstop for turns that never call `release_invocation`. |
+| `session_idle_timeout_seconds` | `600` | Idle reaper: closes a turn's container once it goes untouched this long. Backstop for turns that never call `release_invocation` or `close`. Stops once the tool is garbage-collected. |
 
 The model can read spilled stdout back from the overflow artifact:
 
@@ -286,7 +286,7 @@ print(spilled[-2000:])
 
 ### Turn-scoped sessions
 
-A sandbox container is held open for one **turn** (one ADK invocation) and reused across that turn's `execute_code` calls, so cold start is paid at most once per turn. Python globals **and** the working directory persist across a turn's calls and reset between turns — use ADK Artifacts for cross-turn persistence. The container is released when the turn ends (via `await tool.release_invocation(...)`, wired in [Usage](#-usage)) and destroyed by the platform, so no state survives into another turn or tenant.
+A sandbox container is held open for one **turn** (one ADK invocation) and reused across that turn's `execute_code` calls, so cold start is paid at most once per turn. Python globals **and** the working directory persist across a turn's calls and reset between turns — use ADK Artifacts for cross-turn persistence. The container is released when the turn ends (via `await tool.release_invocation(...)` or `await tool.close()`, wired in [Usage](#-usage)) and destroyed by the platform, so no state survives into another turn or tenant.
 
 ## 🏗️ Architecture
 

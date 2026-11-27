@@ -747,6 +747,23 @@ async def test_release_invocation_closes_the_turn_session() -> None:
 
 
 @pytest.mark.asyncio
+async def test_close_closes_every_unreleased_turn_session() -> None:
+    tool = ExecuteCodeTool(tools=[], backend=FakeRuntime(), max_output_chars=10_000)
+
+    await _run(tool, _fresh_ctx("s-close-a", "inv-close-a"), "print('a')\n", call_id="a1")
+    await _run(tool, _fresh_ctx("s-close-b", "inv-close-b"), "print('b')\n", call_id="b1")
+    turns = list(tool._turns.values())
+    reaper = tool._reaper_task
+
+    await tool.close()
+    await asyncio.sleep(0)
+
+    assert tool._turns == {}
+    assert all(turn.session._closed for turn in turns)  # type: ignore[attr-defined]
+    assert reaper is not None and reaper.cancelled()
+
+
+@pytest.mark.asyncio
 async def test_idle_reaper_closes_stale_sessions() -> None:
     ctx = _fresh_ctx("s-reap", "inv-reap")
     tool = ExecuteCodeTool(tools=[], backend=FakeRuntime(), max_output_chars=10_000)
